@@ -405,29 +405,74 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
 
         {/* Evidence Status Summary Banner */}
         {hasAutoPopulated && (
-          <div className="mt-4 p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
-            <div className="flex items-center gap-2.5">
-              <span className="p-1 rounded-md bg-blue-600 text-white shrink-0">
-                <FileSearch className="w-3.5 h-3.5" />
-              </span>
-              <div>
-                <span className="font-bold text-slate-900">
-                  {extracted?.is_ai_powered ? 'AI Document Mapper 정밀 근거 검증 완료: ' : '문서 사업정보 추출 완료: '}
+          <div className="mt-4 space-y-2.5">
+            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+              <div className="flex items-center gap-2.5">
+                <span className="p-1 rounded-md bg-blue-600 text-white shrink-0">
+                  <FileSearch className="w-3.5 h-3.5" />
                 </span>
-                <span className="text-slate-600">
-                  {clientName ? `수요기관(${clientName}), ` : ''}
-                  경쟁방식({COMPETITION_METHOD_LABELS[competitionMethod]?.label || '미확인'}),
-                  낙찰방식({AWARD_METHOD_LABELS[awardMethod]?.label || '미확인'})
-                  {budgetAmount ? `, 예산(${Number(budgetAmount).toLocaleString()}원)` : ', 예산(미기재)'}
+                <div>
+                  <span className="font-bold text-slate-900">
+                    {extracted?.is_ai_powered ? 'AI 파이프라인 v4 정밀 근거 검증 완료: ' : '문서 사업정보 추출 완료: '}
+                  </span>
+                  <span className="text-slate-600">
+                    {clientName ? `수요기관(${clientName}), ` : ''}
+                    경쟁방식({COMPETITION_METHOD_LABELS[competitionMethod]?.label || '미확인'}),
+                    낙찰방식({AWARD_METHOD_LABELS[awardMethod]?.label || '미확인'})
+                    {budgetAmount ? `, 예산(${Number(budgetAmount).toLocaleString()}원)` : ', 예산(미기재)'}
+                  </span>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0 self-start sm:self-center">
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-mono font-semibold bg-white border border-slate-200 text-slate-700">
+                  <Cpu className="w-3 h-3 text-blue-600" />
+                  {extracted?.model_used || 'gemini-3.8-flash'}
                 </span>
               </div>
             </div>
-            <div className="flex items-center gap-2 shrink-0 self-start sm:self-center">
-              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-mono font-semibold bg-white border border-slate-200 text-slate-700">
-                <Cpu className="w-3 h-3 text-blue-600" />
-                {extracted?.model_used || 'gemini-3.8-flash'}
-              </span>
-            </div>
+
+            {/* Metadata Extractor v4 Pipeline Progression Summary */}
+            {extracted?.pipeline_stats && (
+              <div className="p-2.5 px-3 rounded-lg bg-indigo-50/70 border border-indigo-200/80 text-[11px] text-indigo-900 flex flex-wrap items-center justify-between gap-2 shadow-2xs">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-bold text-indigo-950 flex items-center gap-1">
+                    <Sparkles className="w-3 h-3 text-indigo-600" />
+                    <span>Metadata Extractor v4 진행:</span>
+                  </span>
+                  <span className="text-indigo-800">
+                    AI Explorer: <strong>{extracted.pipeline_stats.exploration_rounds}회 문서 탐색</strong> ({extracted.pipeline_stats.tool_calls_count}회 도구 호출)
+                  </span>
+                  <span className="text-indigo-300">|</span>
+                  <span className="text-indigo-800">
+                    Specialists: <strong>{extracted.pipeline_stats.specialists_count}개 분야 분석</strong>
+                  </span>
+                  <span className="text-indigo-300">|</span>
+                  <span className="text-indigo-800">
+                    Metadata Judge: <strong>{extracted.pipeline_stats.judge_executed ? '검증 완료' : '진행'}</strong>
+                  </span>
+                  <span className="text-indigo-300">|</span>
+                  <span className="text-indigo-800">
+                    Source Validator: <strong>{extracted.pipeline_stats.source_validator.verified_evidence_count}/{extracted.pipeline_stats.source_validator.total_evidence_checked}</strong> 근거 검증 성공
+                  </span>
+                </div>
+                {extracted.pipeline_stats.judge_reexploration_triggered && (
+                  <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-900 border border-amber-200">
+                    🎯 1차 타겟 재탐색 반영
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Conflict Detected Alert Banner */}
+            {extracted?.evidence_status &&
+              Object.values(extracted.evidence_status).some((st) => st === 'CONFLICT') && (
+                <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center gap-2.5">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                  <div>
+                    <strong className="font-bold">상충 정보 감지:</strong> 문서 내 기재 내용(개요 vs 세부내용 또는 본문 vs 표)에 불일치가 발견되었습니다. 상충 항목을 주의 깊게 확인한 후 확정하십시오.
+                  </div>
+                </div>
+              )}
           </div>
         )}
 
@@ -449,6 +494,26 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
 
             {extracted.evidence_quotes && Object.keys(extracted.evidence_quotes).length > 0 && (
               <div className="pt-2 grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+                {extracted.evidence_quotes.project_name && (
+                  <div className="p-2 rounded bg-white/90 border border-indigo-100 flex items-start gap-1.5">
+                    <Quote className="w-3.5 h-3.5 text-indigo-500 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold text-slate-800">[사업명] </span>
+                      <span className="text-slate-700">"{extracted.evidence_quotes.project_name.quote}"</span>
+                      <span className="ml-1 text-[10px] font-mono text-slate-400">({extracted.evidence_quotes.project_name.block_id})</span>
+                    </div>
+                  </div>
+                )}
+                {extracted.evidence_quotes.client_name && (
+                  <div className="p-2 rounded bg-white/90 border border-indigo-100 flex items-start gap-1.5">
+                    <Quote className="w-3.5 h-3.5 text-indigo-500 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold text-slate-800">[수요기관] </span>
+                      <span className="text-slate-700">"{extracted.evidence_quotes.client_name.quote}"</span>
+                      <span className="ml-1 text-[10px] font-mono text-slate-400">({extracted.evidence_quotes.client_name.block_id})</span>
+                    </div>
+                  </div>
+                )}
                 {extracted.evidence_quotes.competition_method && (
                   <div className="p-2 rounded bg-white/90 border border-indigo-100 flex items-start gap-1.5">
                     <Quote className="w-3.5 h-3.5 text-indigo-500 shrink-0 mt-0.5" />
@@ -476,6 +541,16 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
                       <span className="font-bold text-slate-800">[사업예산] </span>
                       <span className="text-slate-700">"{extracted.evidence_quotes.budget_amount.quote}"</span>
                       <span className="ml-1 text-[10px] font-mono text-slate-400">({extracted.evidence_quotes.budget_amount.block_id})</span>
+                    </div>
+                  </div>
+                )}
+                {extracted.evidence_quotes.estimated_price && (
+                  <div className="p-2 rounded bg-white/90 border border-indigo-100 flex items-start gap-1.5">
+                    <Quote className="w-3.5 h-3.5 text-indigo-500 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold text-slate-800">[추정가격] </span>
+                      <span className="text-slate-700">"{extracted.evidence_quotes.estimated_price.quote}"</span>
+                      <span className="ml-1 text-[10px] font-mono text-slate-400">({extracted.evidence_quotes.estimated_price.block_id})</span>
                     </div>
                   </div>
                 )}

@@ -354,13 +354,21 @@ async function extractMetadataLogic(
     parsedMetadata,
   });
 
-  const extracted = aiResult.extracted;
+  const extracted = {
+    ...aiResult.extracted,
+    procurement_method_reason: aiResult.procurement_method_reason,
+    metadata_judge_report: aiResult.metadata_judge_report,
+    pipeline_stats: aiResult.pipelineStats,
+  };
   extractedStore.set(projectId, extracted);
 
   // AI 추출값은 ExtractedMetadata에만 저장하고,
   // AuthoritativeMetadata는 사용자가 화면에서 확인 후 [확정]할 때 생성/갱신합니다.
   saveMetadataToDisk();
-  return aiResult;
+  return {
+    ...aiResult,
+    extracted,
+  };
 }
 
 // Vertical Slice 1: Upload & parse via rhwp CLI & Python parser service

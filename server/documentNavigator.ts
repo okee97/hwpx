@@ -295,24 +295,50 @@ export class DocumentNavigator {
   }
 
   /**
-   * Search tables by title or cell content.
+   * Search tables by title or cell content with token-based OR scoring.
+   * Multi-keyword queries like "사업예산 추정가격 소요" match any tables containing those tokens.
    */
   searchTables(query: string, limit: number = 3): TableMatrix[] {
-    const lowerQuery = query.toLowerCase();
+    if (!query || !query.trim()) return [];
+    const lowerQuery = query.toLowerCase().trim();
+    const tokens = tokenize(query);
+    const rawWords = query.split(/\s+/).map((w) => w.trim().toLowerCase()).filter((w) => w.length > 1);
+    const allSearchTokens = Array.from(new Set([...tokens, ...rawWords]));
+
     const results: Array<{ table: TableMatrix; score: number }> = [];
 
     for (const table of this.index.tables) {
       let score = 0;
-      if (table.caption && table.caption.toLowerCase().includes(lowerQuery)) {
-        score += 5;
+      const captionLower = (table.caption || '').toLowerCase();
+
+      // 1. Full phrase match bonus in caption
+      if (query.length >= 3 && captionLower.includes(lowerQuery)) {
+        score += 20;
       }
+
+      // 2. Token matches in caption
+      for (const token of allSearchTokens) {
+        if (captionLower.includes(token)) {
+          score += token.length >= 4 ? 8 : 4;
+        }
+      }
+
+      // 3. Token matches in table rows/cells
       for (const row of table.rows) {
         for (const cell of row) {
-          if (cell && cell.toLowerCase().includes(lowerQuery)) {
-            score += 1;
+          if (!cell) continue;
+          const cellLower = cell.toLowerCase();
+          if (query.length >= 3 && cellLower.includes(lowerQuery)) {
+            score += 10;
+          }
+          for (const token of allSearchTokens) {
+            if (cellLower.includes(token)) {
+              score += token.length >= 4 ? 3 : 1;
+            }
           }
         }
       }
+
       if (score > 0) {
         results.push({ table, score });
       }

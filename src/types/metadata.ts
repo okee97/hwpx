@@ -38,6 +38,7 @@ export type EvidenceStatus =
 
 export interface EvidenceQuote {
   block_id?: string;
+  table_id?: string;
   quote: string;
   note?: string;
   status: EvidenceStatus;
@@ -86,6 +87,27 @@ export interface ExtractedMetadata {
   source_references: Record<string, string>;
   extracted_at: string;
   status: string;
+  metadata_judge_report?: string;
+  pipeline_stats?: {
+    exploration_rounds: number;
+    tool_calls_count: number;
+    specialists_count: number;
+    judge_executed: boolean;
+    judge_reexploration_triggered: boolean;
+    source_validator: {
+      total_evidence_checked: number;
+      verified_evidence_count: number;
+      rejected_missing_blocks: number;
+      demoted_quote_mismatches: number;
+      numeric_mismatches_rejected: number;
+    };
+    models_used: {
+      explorer?: string;
+      specialists?: string;
+      judge?: string;
+    };
+    duration_ms: number;
+  };
 }
 
 export interface AuthoritativeMetadata {
