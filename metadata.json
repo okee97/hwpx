@@ -1,0 +1,7 @@
+{
+  "name": "HWP Doc Reviewer",
+  "description": "HWP 문서 업로드 및 rhwp CLI 파싱, AI 사업정보 추출 및 확정, Rule Engine 및 AI 종합 검토 파이프라인(Fairness Review Agent, General Review Agent, Result Merger)과 검토 결과 대시보드를 지원하는 풀스택 공문서 검토 플랫폼",
+  "requestFramePermissions": [],
+
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
