@@ -1,4 +1,13 @@
-import { ExtractedMetadata, AuthoritativeMetadata, ClientType, GoverningLaw, ProcurementMethod } from '../src/types/metadata';
+import {
+  ExtractedMetadata,
+  ClientType,
+  GoverningLaw,
+  ProcurementMethod,
+  CompetitionMethod,
+  AwardMethod,
+  EvidenceStatus,
+  EvidenceQuote,
+} from '../src/types/metadata';
 import { DocumentBlock } from '../src/types/finding';
 import { getGeminiClient, generateContentWithFallback, isGeminiKeyConfigured } from './geminiClient';
 
@@ -18,9 +27,80 @@ export interface AiMetadataResult {
 }
 
 /**
- * 정교한 Gemini AI 기반 한글 공문서 메타데이터 분석기
- * - "수의계약" 단순 키워드 오인식 방지: "사업자 선정방식", "입찰 및 낙찰자 결정" 문맥을 정밀 분석하여 주 계약방법(협상에 의한 계약 등) 도출
- * - 할루시네이션(임의 가짜 숫자/기간) 금지: 문서에 명시된 실제 예산(원 단위 정수) 및 사업기간 문구만 추출
+ * AI Document Mapper:
+ * Scans all document blocks to scout target blocks for 5 core domains:
+ * 1. Overview & Demand Agency (사업개요, 사업명, 수요기관)
+ * 2. Budget & Pricing (사업예산, 추정가격, 부가세)
+ * 3. Competition Method (입찰/경쟁 형태: 일반경쟁, 제한경쟁, 지명경쟁, 수의계약)
+ * 4. Award Method (낙찰자 결정방식: 협상에 의한 계약, 적격심사, 최저가 등)
+ * 5. Project Period (사업기간, 과업기간)
+ */
+function scoutTargetBlocks(blocks: DocumentBlock[], rawText: string) {
+  // If no blocks provided, synthesize paragraph blocks from rawText
+  const activeBlocks: DocumentBlock[] =
+    blocks && blocks.length > 0
+      ? blocks
+      : rawText
+          .split('\n')
+          .map((line, idx) => ({
+            block_id: `para_gen_${idx + 1}`,
+            block_type: 'PARAGRAPH' as const,
+            text: line.trim(),
+            native_locator: { section_index: 0, paragraph_index: idx },
+          }))
+          .filter((b) => b.text.length > 0);
+
+  const overviewBlocks: DocumentBlock[] = [];
+  const budgetBlocks: DocumentBlock[] = [];
+  const competitionBlocks: DocumentBlock[] = [];
+  const awardBlocks: DocumentBlock[] = [];
+  const periodBlocks: DocumentBlock[] = [];
+
+  const overviewRegex = /(?:사업명|과업명|용역명|수요기관|발주기관|발주처|공고명|추진배경|사업목적)/;
+  const budgetRegex = /(?:사업예산|총예산|소요예산|예산액|추정가격|추정금액|배정예산|부가세|VAT|원\s*\(VAT|단위\s*:\s*원)/;
+  const competitionRegex = /(?:입찰\s*방식|경쟁\s*형태|입찰\s*참가\s*자격|일반경쟁|제한경쟁|지명경쟁|수의계약|중소기업자간경쟁|지역제한)/;
+  const awardRegex = /(?:낙찰자\s*결정|사업자\s*선정|선정\s*방식|협상에\s*의한\s*계약|적격심사|최저가|기술평가|가격평가|제안서\s*평가|기술능력평가|종합평가)/;
+  const periodRegex = /(?:사업기간|과업기간|용역기간|계약기간|수행기간|착수일로부터|계약체결일로부터)/;
+
+  activeBlocks.forEach((block, idx) => {
+    // Early document blocks (first 25 blocks) are often title/overview
+    if (idx < 25) {
+      overviewBlocks.push(block);
+    }
+    if (overviewRegex.test(block.text) && !overviewBlocks.includes(block)) {
+      overviewBlocks.push(block);
+    }
+    if (budgetRegex.test(block.text)) {
+      budgetBlocks.push(block);
+    }
+    if (competitionRegex.test(block.text)) {
+      competitionBlocks.push(block);
+    }
+    if (awardRegex.test(block.text)) {
+      awardBlocks.push(block);
+    }
+    if (periodRegex.test(block.text)) {
+      periodBlocks.push(block);
+    }
+  });
+
+  // Limit counts to keep prompt dense and precise
+  return {
+    activeBlocks,
+    overviewBlocks: overviewBlocks.slice(0, 30),
+    budgetBlocks: budgetBlocks.slice(0, 30),
+    competitionBlocks: competitionBlocks.slice(0, 30),
+    awardBlocks: awardBlocks.slice(0, 30),
+    periodBlocks: periodBlocks.slice(0, 20),
+  };
+}
+
+/**
+ * Metadata Extractor v2 Architecture:
+ * 1. AI Document Mapper (Target blocks identification across full document)
+ * 2. Specialized Multi-Domain Extraction with Zero Bias (No default assumptions)
+ * 3. AI Judge & Source Verification (Verifies quotes and block_ids against real document)
+ * 4. Separate competition_method vs award_method
  */
 export async function extractMetadataWithGemini(
   input: MetadataExtractionInput
@@ -28,107 +108,138 @@ export async function extractMetadataWithGemini(
   const { projectId, blocks, rawText = '', fileName = '', parsedMetadata } = input;
   const gemini = getGeminiClient();
 
-  // Combine rich contextual document text
   const cleanFileName = fileName
     .replace(/\.(hwp|hwpx|hwt)$/i, '')
     .replace(/[_-]/g, ' ')
     .trim();
-
-  // Pick representative text chunks: overview, procurement sections, budget tables
   const docTitle = parsedMetadata?.title || cleanFileName || '공공 사업 문서';
-  
-  // Prepare text up to 30,000 characters for Gemini Flash
-  const blockLines = blocks.map((b) => `[${b.block_id}] ${b.text}`);
-  const combinedText = [
-    `[문서 파일명]: ${fileName}`,
-    `[문서 제목 메타데이터]: ${docTitle}`,
-    `[문서 본문 내용 발췌]:`,
-    rawText.slice(0, 25000),
-    `[문서 상세 블록 일부]:`,
-    blockLines.slice(0, 80).join('\n'),
-  ].join('\n\n');
+
+  // Step 1: Scout target blocks across the entire document
+  const scouted = scoutTargetBlocks(blocks, rawText);
+  const { activeBlocks, overviewBlocks, budgetBlocks, competitionBlocks, awardBlocks, periodBlocks } = scouted;
 
   if (gemini && isGeminiKeyConfigured()) {
     try {
-      const systemInstruction = `당신은 대한민국 공공조달, 제안요청서(RFP), 과업지시서, 공문서 분석 전문 수석 행정관이자 AI 계약 심사관입니다.
-제공된 한글 문서의 제목, 본문, 표 데이터를 정밀하게 정독하고, 공공사업의 핵심 메타데이터 6대 요소를 정확하게 추출하십시오.
+      const formatBlocks = (arr: DocumentBlock[]) =>
+        arr.map((b) => `[${b.block_id}] ${b.text}`).join('\n');
 
-[핵심 추출 및 판정 원칙]
-1. 계약방법 (procurement_method):
-   - 값: "NEGOTIATION" | "RESTRICTED_COMPETITIVE" | "OPEN_COMPETITIVE" | "PRIVATE_CONTRACT"
-   - ⚠️ 절대 주의: 문서 어딘가에 유찰 시 수의계약 가능성, 하도급 관련 조항, 수의계약 배제 문구 등에 "수의계약"이라는 단어가 단순히 등장한다고 해서 수의계약으로 판단하면 절대 안 됩니다!
-   - 문서의 "사업자 선정 방식", "입찰 방식", "낙찰자 결정 방식", "계약방법" 절을 반드시 확인하십시오.
-   - 정보화 및 소프트웨어 용역사업은 대부분 "협상에 의한 계약체결(지방계약법 시행령 제43조, 국가계약법 시행령 제43조)"이며 제안서 기술평가와 가격평가로 진행됩니다. 이 경우 반드시 "NEGOTIATION"을 선택하십시오.
-   - "제한경쟁", "중소기업자간경쟁"인 경우 "RESTRICTED_COMPETITIVE", "일반경쟁"인 경우 "OPEN_COMPETITIVE", 공식 주 계약방법이 수의계약으로 정해진 경우에만 "PRIVATE_CONTRACT"를 선택하십시오.
-   - procurement_method_reason에 왜 이 계약방법으로 판정했는지 명확한 근거 문장(예: "문서 제4장 사업자선정방식에 '협상에 의한 계약 체결'로 명시되어 있음")을 작성하십시오.
+      const targetedContext = `
+[문서 기본 메타데이터]
+- 파일명: ${fileName}
+- 파서 감지 제목: ${docTitle}
+- 전체 블록 수: ${activeBlocks.length}개
 
-2. 사업예산 (budget_amount) 및 추정가격 (estimated_price):
-   - 문서 본문, 개요표, 소요예산 항목에 명시된 "실제 금액(원 단위 정수)"을 추출하십시오.
-   - 예: "1,450,000,000원", "15억원", "금550,000,000원" 등 -> 정수 숫자로 변환 (1450000000)
-   - ⚠️ 절대 주의: 문서에 예산 금액이 전혀 적혀있지 않은 경우 절대 5억 5천만원 등 임의의 가짜 숫자를 날조하지 말고 반드시 null로 반환하십시오.
-   - 추정가격(estimated_price): 문서에 별도로 기재되어 있으면 그 숫자를, 별도 기재 없이 부가세 포함 총사업예산만 있으면 공급가액(예산 / 1.1 반올림) 또는 문서상 금액을 숫자로 추출하십시오.
+=== [도메인 1: 사업개요 / 발주기관 후보 블록 (${overviewBlocks.length}건)] ===
+${formatBlocks(overviewBlocks) || '(감지된 후보 블록 없음)'}
 
-3. 사업기간 (project_period):
-   - 문서의 "사업기간", "과업기간", "계약기간" 등에 기재된 실제 텍스트를 그대로 가져오십시오.
-   - 예: "계약체결일로부터 2026년 11월 30일까지", "착수일로부터 10개월", "계약체결일로부터 180일" 등 실제 문서에 적힌 문구 그대로.
-   - ⚠️ 절대 주의: 문서에 없는 경우 임의로 "계약체결일로부터 8개월" 같은 기본값을 지어내지 마십시오. 없으면 null로 반환하십시오.
+=== [도메인 2: 예산 및 추정가격 후보 블록 (${budgetBlocks.length}건)] ===
+${formatBlocks(budgetBlocks) || '(감지된 후보 블록 없음)'}
 
-4. 발주/수요기관 (client_name):
-   - 실제 사업을 발주하거나 이용하는 공공기관명 (예: "서울특별시 강남구", "한국지능정보사회진흥원", "행정안전부").
-   - 문서에 없으면 null.
+=== [도메인 3: 입찰(경쟁)방법 후보 블록 (${competitionBlocks.length}건)] ===
+${formatBlocks(competitionBlocks) || '(감지된 후보 블록 없음)'}
 
-5. 기관유형 (client_type) & 적용법령 (governing_law):
-   - 지방자치단체(서울특별시, 광역시, 도청, 시청, 군청, 구청) -> client_type: "LOCAL_GOVERNMENT", governing_law: "LOCAL_CONTRACT_ACT"
-   - 중앙행정기관(부, 처, 청, 위원회) -> client_type: "CENTRAL_GOVERNMENT", governing_law: "STATE_CONTRACT_ACT"
-   - 공공기관, 공기업, 준정부기관, 진흥원, 공사, 공단, 연구원, 재단 -> client_type: "PUBLIC_INSTITUTION", governing_law: "PUBLIC_ENTERPRISE_RULE" 또는 "STATE_CONTRACT_ACT"
-   - 교육청, 국공립학교 -> client_type: "EDUCATIONAL", governing_law: "LOCAL_CONTRACT_ACT" 또는 "STATE_CONTRACT_ACT"
+=== [도메인 4: 낙찰자 결정방법 / 제안서 평가 후보 블록 (${awardBlocks.length}건)] ===
+${formatBlocks(awardBlocks) || '(감지된 후보 블록 없음)'}
 
-6. 사업명 (project_name):
-   - 문서 표지, 사업개요에 적힌 정식 사업명칭.
+=== [도메인 5: 사업기간 후보 블록 (${periodBlocks.length}건)] ===
+${formatBlocks(periodBlocks) || '(감지된 후보 블록 없음)'}
+`.trim();
+
+      const systemInstruction = `당신은 대한민국 공공조달 및 제안요청서(RFP) 계약심사 수석 행정관이자 객관적 AI 검토관입니다.
+제공된 공문서의 후보 블록들을 정밀 대조하여 사업정보 메타데이터를 객관적으로 추출하십시오.
+
+[절대 준수 판정 원칙]
+1. 편향 및 추정 배제 (NO BIAS):
+   - "정보화 사업은 대개 협상계약이다"와 같은 관행이나 편견에 기대지 마십시오.
+   - 반드시 문서에 직접 기재된 표현만을 근거로 삼으십시오.
+   - 문서에 명확한 근거가 없으면 망설이지 말고 반드시 "UNKNOWN" 또는 null을 선택하십시오.
+
+2. 경쟁방법(competition_method)과 낙찰방법(award_method)의 명확한 분리:
+   - 대한민국 공공계약에서 경쟁방식과 낙찰방식은 별개의 독립된 축입니다.
+   - [경쟁방법 competition_method]:
+     * "OPEN_COMPETITIVE": 일반경쟁입찰
+     * "RESTRICTED_COMPETITIVE": 제한경쟁입찰 (지역제한, 실적제한, 중소기업자간경쟁 등)
+     * "NOMINATED_COMPETITIVE": 지명경쟁입찰
+     * "PRIVATE_CONTRACT": 수의계약 (단순 조항 언급이 아닌 본 용역의 주 계약방식인 경우)
+     * "UNKNOWN": 문서 미기재
+   - [낙찰자 결정방법 award_method]:
+     * "NEGOTIATION": 협상에 의한 계약 (기술평가 80~90% + 가격평가 10~20%)
+     * "QUALIFICATION_REVIEW": 적격심사 (최저가 입찰 후 이행능력 심사)
+     * "LOWEST_PRICE": 최저가낙찰제
+     * "TWO_STAGE": 2단계 경쟁
+     * "SPEC_PRICE_SIMULTANEOUS": 규격·가격 동시입찰
+     * "OTHER": 기타
+     * "UNKNOWN": 문서 미기재
+
+3. 사업예산 (budget_amount) & 추정가격 (estimated_price):
+   - 문서에 실제로 적혀있는 숫자(원 단위 정수)만 추출하십시오.
+   - 예산이 없으면 550,000,000원 등 가짜 숫자를 임의로 만들어내지 말고 null로 반환하십시오.
+   - 추정가격이 문서에 별도로 기재되어 있으면 그 숫자를 반환하고, 기재되어 있지 않으면 null로 반환하십시오.
+   - vat_included: 예산에 부가가치세가 포함되어 있는지 boolean (true/false/null).
+
+4. 증거 및 상태 판정 (Evidence Status):
+   - 각 필드마다 아래 상태값 중 하나를 반드시 부여하십시오:
+     * "EXPLICIT": 문서에 명확하게 단어와 숫자가 적혀있음
+     * "INFERRED": 명시적 항목은 없으나 문맥상 확실하게 도출됨
+     * "CALCULATED": 산출 공식에 의해 역산됨
+     * "CONFLICT": 문서 내 앞뒤 조항이 서로 모순되거나 상충함
+     * "UNVERIFIED": 확인 불가
+   - 각 필드 판단에 결정적 역할을 한 블록의 [block_id]와 원문 문장(quote)을 정확히 기재하십시오.
 
 반드시 유효한 JSON 형식으로만 응답하십시오.`;
 
-      const userPrompt = `아래 공문서 텍스트를 정밀 분석하여 JSON 객체를 생성하십시오.
+      const userPrompt = `다음 공문서 후보 블록들을 정밀 분석하여 JSON 객체를 출력하십시오:
 
-문서 내용:
-${combinedText}
+${targetedContext}
 
-응답 JSON 구조 예시:
+응답 JSON 구조:
 {
-  "project_name": "2026년 지능형 차세대 행정정보시스템 구축 용역",
-  "client_name": "서울특별시 강남구",
-  "client_type": "LOCAL_GOVERNMENT",
-  "governing_law": "LOCAL_CONTRACT_ACT",
-  "procurement_method": "NEGOTIATION",
-  "procurement_method_reason": "제3절 사업자 선정 방식에서 '지방계약법 시행령 제43조에 따른 협상에 의한 계약 체결'이 명시되어 있으며 기술평가 90%, 가격평가 10% 구조임. (본문 단독입찰 재공고 유찰 시 수의계약 검토 문구는 주 계약방식이 아님)",
-  "budget_amount": 1450000000,
-  "estimated_price": 1318181818,
-  "project_period": "착수일로부터 10개월",
-  "confidence_scores": {
-    "project_name": 0.98,
-    "client_name": 0.98,
-    "client_type": 0.96,
-    "governing_law": 0.95,
-    "procurement_method": 0.99,
-    "budget_amount": 0.98,
-    "estimated_price": 0.92,
-    "project_period": 0.97
+  "project_name": "사업명 텍스트",
+  "client_name": "수요기관명 (예: 서울특별시 강남구)",
+  "client_type": "LOCAL_GOVERNMENT" | "CENTRAL_GOVERNMENT" | "PUBLIC_INSTITUTION" | "EDUCATIONAL" | "OTHER" | "UNKNOWN",
+  "governing_law": "LOCAL_CONTRACT_ACT" | "STATE_CONTRACT_ACT" | "PUBLIC_ENTERPRISE_RULE" | "OTHER" | "UNKNOWN",
+  "competition_method": "OPEN_COMPETITIVE" | "RESTRICTED_COMPETITIVE" | "NOMINATED_COMPETITIVE" | "PRIVATE_CONTRACT" | "UNKNOWN",
+  "award_method": "NEGOTIATION" | "QUALIFICATION_REVIEW" | "LOWEST_PRICE" | "TWO_STAGE" | "SPEC_PRICE_SIMULTANEOUS" | "OTHER" | "UNKNOWN",
+  "procurement_method_reason": "경쟁방법과 낙찰방법을 판정한 구체적 근거 설명",
+  "budget_amount": 1450000000 또는 null,
+  "estimated_price": 1318181818 또는 null,
+  "vat_included": true | false | null,
+  "project_period": "착수일로부터 10개월" 또는 null,
+  "evidence_status": {
+    "project_name": "EXPLICIT",
+    "client_name": "EXPLICIT",
+    "client_type": "INFERRED",
+    "governing_law": "INFERRED",
+    "competition_method": "EXPLICIT",
+    "award_method": "EXPLICIT",
+    "budget_amount": "EXPLICIT",
+    "project_period": "EXPLICIT"
   },
-  "source_references": {
-    "project_name": "문서 표지 및 제1장 개요",
-    "client_name": "사업 개요 수요기관 항목",
-    "procurement_method": "사업자 선정 및 입찰 방식 절",
-    "budget_amount": "사업개요 소요예산 항목",
-    "project_period": "사업개요 사업기간 항목"
-  },
-  "extracted_snippets": {
-    "procurement_method": "입찰 및 계약방법: 협상에 의한 계약",
-    "budget": "사업예산: 1,450,000,000원(부가세 포함)",
-    "period": "사업기간: 착수일로부터 10개월"
+  "evidence_quotes": {
+    "competition_method": {
+      "block_id": "블록ID",
+      "quote": "원문 인용문",
+      "status": "EXPLICIT"
+    },
+    "award_method": {
+      "block_id": "블록ID",
+      "quote": "원문 인용문",
+      "status": "EXPLICIT"
+    },
+    "budget_amount": {
+      "block_id": "블록ID",
+      "quote": "원문 인용문",
+      "status": "EXPLICIT"
+    },
+    "project_period": {
+      "block_id": "블록ID",
+      "quote": "원문 인용문",
+      "status": "EXPLICIT"
+    }
   }
 }`;
 
-      const { text } = await generateContentWithFallback(
+      const { text, modelUsed } = await generateContentWithFallback(
         {
           contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
           config: {
@@ -139,8 +250,9 @@ ${combinedText}
           },
         },
         ['gemini-3.8-flash', 'gemini-3.1-flash-lite'],
-        15000
+        18000
       );
+      const fallbackUsed = modelUsed !== 'gemini-3.8-flash';
 
       let parsed: any = null;
       try {
@@ -151,14 +263,73 @@ ${combinedText}
       }
 
       if (parsed && typeof parsed === 'object') {
-        const rawBudget = typeof parsed.budget_amount === 'number' && parsed.budget_amount > 0 ? parsed.budget_amount : null;
-        const rawEstimated = typeof parsed.estimated_price === 'number' && parsed.estimated_price > 0 ? parsed.estimated_price : null;
+        const rawBudget =
+          typeof parsed.budget_amount === 'number' && parsed.budget_amount > 0
+            ? parsed.budget_amount
+            : null;
+        const rawEstimated =
+          typeof parsed.estimated_price === 'number' && parsed.estimated_price > 0
+            ? parsed.estimated_price
+            : null;
+
+        // Derived estimated price (only if raw budget exists and explicit estimate doesn't)
         const derivedEst = !rawEstimated && rawBudget ? Math.round(rawBudget / 1.1) : null;
-        const derivationNote = derivedEst ? '총사업예산 기반 추산 (부가가치세 10% 제외 공식: 예산 / 1.1)' : null;
+        const derivationNote = derivedEst
+          ? '총사업예산 기반 역산 (부가가치세 10% 제외 공급가액: 예산 ÷ 1.1 반올림)'
+          : null;
 
         const validatedClientType = validateClientType(parsed.client_type, parsed.client_name);
         const validatedGovLaw = validateGoverningLaw(parsed.governing_law, validatedClientType);
-        const validatedProcMethod = validateProcurementMethod(parsed.procurement_method);
+        const validatedCompMethod = validateCompetitionMethod(parsed.competition_method);
+        const validatedAwardMethod = validateAwardMethod(parsed.award_method);
+
+        // Map combined legacy procurement_method for backward compatibility
+        const legacyProcMethod: ProcurementMethod =
+          validatedAwardMethod === 'NEGOTIATION'
+            ? 'NEGOTIATION'
+            : validatedCompMethod === 'RESTRICTED_COMPETITIVE'
+            ? 'RESTRICTED_COMPETITIVE'
+            : validatedCompMethod === 'OPEN_COMPETITIVE'
+            ? 'OPEN_COMPETITIVE'
+            : validatedCompMethod === 'PRIVATE_CONTRACT'
+            ? 'PRIVATE_CONTRACT'
+            : 'UNKNOWN';
+
+        // Source Validator: Verify evidence quotes against activeBlocks
+        const blockTextMap = new Map<string, string>();
+        activeBlocks.forEach((b) => blockTextMap.set(b.block_id, b.text));
+
+        const validatedEvidenceQuotes: Record<string, EvidenceQuote> = {};
+        if (parsed.evidence_quotes && typeof parsed.evidence_quotes === 'object') {
+          for (const [key, val] of Object.entries(parsed.evidence_quotes)) {
+            const eq = val as any;
+            if (eq && typeof eq === 'object') {
+              const blkId = eq.block_id;
+              const quote = eq.quote || '';
+              const realText = blkId ? blockTextMap.get(blkId) : null;
+              const isRealMatch = realText ? realText.includes(quote.slice(0, 15)) : false;
+
+              validatedEvidenceQuotes[key] = {
+                block_id: blkId,
+                quote,
+                note: eq.note || (isRealMatch ? '원문 대조 일치' : '블록 참조'),
+                status: (eq.status as EvidenceStatus) || (isRealMatch ? 'EXPLICIT' : 'INFERRED'),
+              };
+            }
+          }
+        }
+
+        const evidenceStatusMap: Record<string, EvidenceStatus> = {
+          project_name: (parsed.evidence_status?.project_name as EvidenceStatus) || (parsed.project_name ? 'EXPLICIT' : 'UNVERIFIED'),
+          client_name: (parsed.evidence_status?.client_name as EvidenceStatus) || (parsed.client_name ? 'EXPLICIT' : 'UNVERIFIED'),
+          client_type: (parsed.evidence_status?.client_type as EvidenceStatus) || (validatedClientType !== 'UNKNOWN' ? 'INFERRED' : 'UNVERIFIED'),
+          governing_law: (parsed.evidence_status?.governing_law as EvidenceStatus) || (validatedGovLaw !== 'UNKNOWN' ? 'INFERRED' : 'UNVERIFIED'),
+          competition_method: (parsed.evidence_status?.competition_method as EvidenceStatus) || (validatedCompMethod !== 'UNKNOWN' ? 'EXPLICIT' : 'UNVERIFIED'),
+          award_method: (parsed.evidence_status?.award_method as EvidenceStatus) || (validatedAwardMethod !== 'UNKNOWN' ? 'EXPLICIT' : 'UNVERIFIED'),
+          budget_amount: (parsed.evidence_status?.budget_amount as EvidenceStatus) || (rawBudget ? 'EXPLICIT' : 'UNVERIFIED'),
+          estimated_price: (parsed.evidence_status?.estimated_price as EvidenceStatus) || (rawEstimated ? 'EXPLICIT' : derivedEst ? 'CALCULATED' : 'UNVERIFIED'),
+          project_period: (parsed.evidence_status?.project_period as EvidenceStatus) || (parsed.project_period ? 'EXPLICIT' : 'UNVERIFIED'),
+        };
 
         const extracted: ExtractedMetadata = {
           project_id: projectId,
@@ -166,25 +337,37 @@ ${combinedText}
           client_name: parsed.client_name || null,
           client_type: validatedClientType,
           governing_law: validatedGovLaw,
-          procurement_method: validatedProcMethod,
+          procurement_method: legacyProcMethod,
+          competition_method: validatedCompMethod,
+          award_method: validatedAwardMethod,
           budget_amount: rawBudget,
           estimated_price: rawEstimated,
           derived_estimated_price: derivedEst,
           derivation_note: derivationNote,
           requires_user_confirmation: true,
           project_period: parsed.project_period || null,
+          is_ai_powered: true,
+          analysis_engine: 'AI',
+          model_used: modelUsed,
+          fallback_used: fallbackUsed,
           confidence_scores: {
-            project_name: parsed.confidence_scores?.project_name ?? 0.98,
-            client_name: parsed.confidence_scores?.client_name ?? (parsed.client_name ? 0.95 : 0.3),
+            project_name: parsed.project_name ? 0.95 : 0.4,
+            client_name: parsed.client_name ? 0.95 : 0.3,
             client_type: validatedClientType === 'UNKNOWN' ? 0.2 : 0.92,
             governing_law: validatedGovLaw === 'UNKNOWN' ? 0.2 : 0.92,
-            procurement_method: validatedProcMethod === 'UNKNOWN' ? 0.2 : 0.95,
-            budget_amount: rawBudget ? 0.95 : 0.2,
-            estimated_price: rawEstimated ? 0.90 : 0.2,
+            competition_method: validatedCompMethod === 'UNKNOWN' ? 0.2 : 0.95,
+            award_method: validatedAwardMethod === 'UNKNOWN' ? 0.2 : 0.95,
+            procurement_method: legacyProcMethod === 'UNKNOWN' ? 0.2 : 0.95,
+            budget_amount: rawBudget ? 0.96 : 0.2,
+            estimated_price: rawEstimated ? 0.92 : derivedEst ? 0.85 : 0.2,
           },
-          source_references: parsed.source_references || {
-            procurement_method: validatedProcMethod !== 'UNKNOWN' ? '사업자 선정 방식 절' : '미기재',
-            budget_amount: rawBudget ? '사업예산 항목' : '미기재',
+          evidence_status: evidenceStatusMap,
+          evidence_quotes: validatedEvidenceQuotes,
+          source_references: {
+            competition_method: validatedEvidenceQuotes.competition_method?.block_id || '경쟁방식 탐색 블록',
+            award_method: validatedEvidenceQuotes.award_method?.block_id || '낙찰자결정 탐색 블록',
+            budget_amount: validatedEvidenceQuotes.budget_amount?.block_id || (rawBudget ? '예산 표/문단' : '미기재'),
+            project_period: validatedEvidenceQuotes.project_period?.block_id || (parsed.project_period ? '사업기간 문단' : '미기재'),
           },
           extracted_at: new Date().toISOString(),
           status: 'COMPLETED',
@@ -193,22 +376,22 @@ ${combinedText}
         return {
           extracted,
           procurement_method_reason: parsed.procurement_method_reason,
-          extracted_snippets: parsed.extracted_snippets,
+          extracted_snippets: {
+            competition_method: validatedEvidenceQuotes.competition_method?.quote || '',
+            award_method: validatedEvidenceQuotes.award_method?.quote || '',
+            budget: validatedEvidenceQuotes.budget_amount?.quote || '',
+            period: validatedEvidenceQuotes.project_period?.quote || '',
+          },
           is_ai_powered: true,
         };
       }
     } catch (geminiErr: any) {
-      const msg = geminiErr?.message || String(geminiErr);
-      if (msg.includes('API_KEY_INVALID') || msg.includes('API key not valid')) {
-        console.warn('[Gemini Metadata Extraction] Gemini API key not valid; switching to rule-based fallback.');
-      } else {
-        console.warn('[Gemini Metadata Extraction Fallback]', msg.slice(0, 120));
-      }
+      console.warn('[Gemini Metadata Extraction Fallback]', geminiErr?.message || geminiErr);
     }
   }
 
   // Fallback to high-precision Korean procurement heuristic (Context-aware, zero-hallucination)
-  const fallbackExtracted = extractMetadataRuleBasedFallback(projectId, blocks, rawText, fileName, parsedMetadata);
+  const fallbackExtracted = extractMetadataRuleBasedFallback(projectId, activeBlocks, rawText, fileName, parsedMetadata);
   return {
     extracted: fallbackExtracted,
     is_ai_powered: false,
@@ -216,10 +399,7 @@ ${combinedText}
 }
 
 /**
- * High-Precision Rule-Based Fallback Engine
- * - Evaluates contract method by locating the "입찰 방식 / 사업자 선정" specific section
- * - Does NOT allow spurious "수의계약" in general text to override "협상에 의한 계약"
- * - Returns null when budget/period is not actually found in text (no hardcoded 550,000,000 or 8 months)
+ * High-Precision Rule-Based Fallback Engine (with competition/award separation)
  */
 export function extractMetadataRuleBasedFallback(
   projectId: string,
@@ -280,7 +460,7 @@ export function extractMetadataRuleBasedFallback(
     }
   }
 
-  // 3) 기관유형 및 적용법령 (추정 대신 미확인 시 UNKNOWN 반환)
+  // 3) 기관유형 및 적용법령
   let clientType: ClientType = 'UNKNOWN';
   let governingLaw: GoverningLaw = 'UNKNOWN';
 
@@ -303,42 +483,52 @@ export function extractMetadataRuleBasedFallback(
     }
   }
 
-  // 4) 계약방법 (Procurement Method) - 정밀 문맥 분별 (미발견 시 UNKNOWN)
-  let procurementMethod: ProcurementMethod = 'UNKNOWN';
-  let confidenceMethod = 0.2;
-
+  // 4) 경쟁방법 (Competition Method) & 낙찰방법 (Award Method) 분리 탐색
   const procurementSectionMatch = allLines.match(
     /(?:사업자\s*선정\s*방식|입찰\s*방식|계약\s*방법|낙찰자\s*결정\s*방식|입찰\s*및\s*낙찰자)[\s\S]{1,600}/
   );
   const procurementContext = procurementSectionMatch ? procurementSectionMatch[0] : allLines;
 
-  // 우선순위 1: 협상에 의한 계약 (공공 SW 사업의 표준)
-  if (/협상에\s*의한\s*계약|제안서\s*평가|기술\s*(?:능력)?\s*평가|기술평가\s*[0-9]+%|기술\s*:\s*가격/.test(procurementContext)) {
-    procurementMethod = 'NEGOTIATION';
-    confidenceMethod = 0.98;
-  }
-  // 우선순위 2: 제한경쟁입찰
-  else if (/제한경쟁|중소기업자간경쟁|지역제한/.test(procurementContext)) {
-    procurementMethod = 'RESTRICTED_COMPETITIVE';
-    confidenceMethod = 0.96;
-  }
-  // 우선순위 3: 일반경쟁입찰
-  else if (/일반경쟁/.test(procurementContext)) {
-    procurementMethod = 'OPEN_COMPETITIVE';
-    confidenceMethod = 0.95;
-  }
-  // 우선순위 4: 공식 수의계약 (단순 본문 언급이 아니라 계약방법 자체로 규정된 경우에만)
-  else if (/(?:계약\s*방법|입찰\s*방식)\s*[:：]?\s*수의계약|수의계약\s*체결\s*대상/.test(procurementContext)) {
-    procurementMethod = 'PRIVATE_CONTRACT';
-    confidenceMethod = 0.93;
+  // 경쟁방법
+  let competitionMethod: CompetitionMethod = 'UNKNOWN';
+  if (/제한경쟁|중소기업자간경쟁|지역제한|실적제한/.test(procurementContext)) {
+    competitionMethod = 'RESTRICTED_COMPETITIVE';
+  } else if (/일반경쟁/.test(procurementContext)) {
+    competitionMethod = 'OPEN_COMPETITIVE';
+  } else if (/지명경쟁/.test(procurementContext)) {
+    competitionMethod = 'NOMINATED_COMPETITIVE';
+  } else if (/(?:계약\s*방법|입찰\s*방식)\s*[:：]?\s*수의계약/.test(procurementContext)) {
+    competitionMethod = 'PRIVATE_CONTRACT';
   }
 
-  // 5) 사업예산 및 추정가격 (문서에 실제로 존재하는 금액만 추출)
-  // 사실 추출과 파생 계산을 명확히 구분
+  // 낙찰자 결정방법
+  let awardMethod: AwardMethod = 'UNKNOWN';
+  if (/협상에\s*의한\s*계약|제안서\s*평가|기술\s*(?:능력)?\s*평가|기술평가\s*[0-9]+%|기술\s*:\s*가격/.test(procurementContext)) {
+    awardMethod = 'NEGOTIATION';
+  } else if (/적격심사/.test(procurementContext)) {
+    awardMethod = 'QUALIFICATION_REVIEW';
+  } else if (/최저가\s*낙찰제|최저가격/.test(procurementContext)) {
+    awardMethod = 'LOWEST_PRICE';
+  } else if (/2단계\s*경쟁|규격·가격\s*동시/.test(procurementContext)) {
+    awardMethod = 'TWO_STAGE';
+  }
+
+  // 하위 호환
+  const legacyProcMethod: ProcurementMethod =
+    awardMethod === 'NEGOTIATION'
+      ? 'NEGOTIATION'
+      : competitionMethod === 'RESTRICTED_COMPETITIVE'
+      ? 'RESTRICTED_COMPETITIVE'
+      : competitionMethod === 'OPEN_COMPETITIVE'
+      ? 'OPEN_COMPETITIVE'
+      : competitionMethod === 'PRIVATE_CONTRACT'
+      ? 'PRIVATE_CONTRACT'
+      : 'UNKNOWN';
+
+  // 5) 사업예산 및 추정가격
   let budgetAmount: number | null = null;
   let explicitEstimatedPrice: number | null = null;
 
-  // 억원 패턴 (예: "15억원", "14억 5,000만원", "금 8억 8천만원")
   const eokMatch = allLines.match(/(?:사\s*업\s*예\s*산|총\s*예\s*산|예\s*산\s*액|소\s*요\s*예\s*산|사\s*업\s*비|계\s*약\s*금\s*액)\s*[:：]?\s*(?:금\s*)?([0-9]+)\s*억\s*([0-9,]+)?\s*만?\s*원?/);
   if (eokMatch) {
     const eok = parseInt(eokMatch[1], 10) * 100000000;
@@ -349,7 +539,6 @@ export function extractMetadataRuleBasedFallback(
     }
     budgetAmount = eok + man;
   } else {
-    // 콤마 숫자 패턴 (예: "1,450,000,000원", "880,000,000원")
     const numMatch = allLines.match(/(?:사\s*업\s*예\s*산|총\s*예\s*산|예\s*산\s*액|소\s*요\s*예\s*산|사\s*업\s*비|추\s*정\s*금\s*액|배\s*정\s*예\s*산)\s*[:：]?\s*(?:일금\s*)?([0-9,]{4,15})\s*(?:원)?/);
     if (numMatch) {
       const parsed = parseInt(numMatch[1].replace(/,/g, ''), 10);
@@ -359,7 +548,6 @@ export function extractMetadataRuleBasedFallback(
     }
   }
 
-  // 별도 추정가격 표기 검사 (원문에 명시된 경우에만 추출)
   const estMatch = allLines.match(/(?:추\s*정\s*가\s*격|추\s*정\s*가)\s*[:：]?\s*(?:일금\s*)?([0-9,]{4,15})\s*(?:원)?/);
   if (estMatch) {
     const parsedEst = parseInt(estMatch[1].replace(/,/g, ''), 10);
@@ -368,13 +556,12 @@ export function extractMetadataRuleBasedFallback(
     }
   }
 
-  // 추정가격 파생 계산 (총예산이 있고 명시적 추정가격이 없는 경우 부가세 10% 제외 계산값 분리)
   const derivedEstimatedPrice = !explicitEstimatedPrice && budgetAmount ? Math.round(budgetAmount / 1.1) : null;
   const derivationNote = derivedEstimatedPrice
-    ? '총사업예산 기반 자동 산출 (부가가치세 10% 제외 공식: 예산 / 1.1)'
+    ? '총사업예산 기반 역산 (부가가치세 10% 제외 공식: 예산 ÷ 1.1)'
     : null;
 
-  // 6) 사업기간 (문서에 실제로 존재하는 문구만 추출, 가짜 기본값 생성 금지)
+  // 6) 사업기간
   let projectPeriod: string | null = null;
   const periodMatch = allLines.match(/(?:사\s*업\s*기\s*간|과\s*업\s*기\s*간|용\s*역\s*기\s*간|계\s*약\s*기\s*간)\s*[:：]?\s*([^\n\r]{3,60})/);
   if (periodMatch) {
@@ -392,24 +579,42 @@ export function extractMetadataRuleBasedFallback(
     client_name: clientName,
     client_type: clientType,
     governing_law: governingLaw,
-    procurement_method: procurementMethod,
+    procurement_method: legacyProcMethod,
+    competition_method: competitionMethod,
+    award_method: awardMethod,
     budget_amount: budgetAmount,
     estimated_price: explicitEstimatedPrice,
     derived_estimated_price: derivedEstimatedPrice,
     derivation_note: derivationNote,
     requires_user_confirmation: true,
     project_period: projectPeriod,
+    is_ai_powered: false,
+    analysis_engine: 'RULE_FALLBACK',
     confidence_scores: {
-      project_name: projectName ? 0.95 : 0.4,
-      client_name: clientName ? 0.94 : 0.2,
-      client_type: clientType === 'UNKNOWN' ? 0.2 : 0.90,
-      governing_law: governingLaw === 'UNKNOWN' ? 0.2 : 0.90,
-      procurement_method: confidenceMethod,
+      project_name: projectName ? 0.90 : 0.4,
+      client_name: clientName ? 0.90 : 0.2,
+      client_type: clientType === 'UNKNOWN' ? 0.2 : 0.85,
+      governing_law: governingLaw === 'UNKNOWN' ? 0.2 : 0.85,
+      competition_method: competitionMethod === 'UNKNOWN' ? 0.2 : 0.90,
+      award_method: awardMethod === 'UNKNOWN' ? 0.2 : 0.90,
+      procurement_method: legacyProcMethod === 'UNKNOWN' ? 0.2 : 0.90,
       budget_amount: budgetAmount ? 0.95 : 0.2,
-      estimated_price: explicitEstimatedPrice ? 0.90 : 0.2,
+      estimated_price: explicitEstimatedPrice ? 0.90 : derivedEstimatedPrice ? 0.85 : 0.2,
+    },
+    evidence_status: {
+      project_name: projectName ? 'EXPLICIT' : 'UNVERIFIED',
+      client_name: clientName ? 'EXPLICIT' : 'UNVERIFIED',
+      client_type: clientType !== 'UNKNOWN' ? 'INFERRED' : 'UNVERIFIED',
+      governing_law: governingLaw !== 'UNKNOWN' ? 'INFERRED' : 'UNVERIFIED',
+      competition_method: competitionMethod !== 'UNKNOWN' ? 'EXPLICIT' : 'UNVERIFIED',
+      award_method: awardMethod !== 'UNKNOWN' ? 'EXPLICIT' : 'UNVERIFIED',
+      budget_amount: budgetAmount ? 'EXPLICIT' : 'UNVERIFIED',
+      estimated_price: explicitEstimatedPrice ? 'EXPLICIT' : derivedEstimatedPrice ? 'CALCULATED' : 'UNVERIFIED',
+      project_period: projectPeriod ? 'EXPLICIT' : 'UNVERIFIED',
     },
     source_references: {
-      procurement_method: procurementMethod !== 'UNKNOWN' ? '사업자 선정 방식 탐색' : '미기재',
+      competition_method: competitionMethod !== 'UNKNOWN' ? '입찰/선정방식 키워드 탐색' : '미기재',
+      award_method: awardMethod !== 'UNKNOWN' ? '낙찰자결정방식 키워드 탐색' : '미기재',
       budget_amount: budgetAmount ? '문서 본문 예산 항목' : '미기재',
     },
     extracted_at: new Date().toISOString(),
@@ -442,10 +647,32 @@ function validateGoverningLaw(raw: string | undefined, clientType?: ClientType):
   return 'UNKNOWN';
 }
 
-function validateProcurementMethod(raw: string | undefined): ProcurementMethod {
-  const valid: ProcurementMethod[] = ['NEGOTIATION', 'RESTRICTED_COMPETITIVE', 'OPEN_COMPETITIVE', 'PRIVATE_CONTRACT', 'UNKNOWN'];
-  if (raw && valid.includes(raw as ProcurementMethod)) {
-    return raw as ProcurementMethod;
+function validateCompetitionMethod(raw: string | undefined): CompetitionMethod {
+  const valid: CompetitionMethod[] = [
+    'OPEN_COMPETITIVE',
+    'RESTRICTED_COMPETITIVE',
+    'NOMINATED_COMPETITIVE',
+    'PRIVATE_CONTRACT',
+    'UNKNOWN',
+  ];
+  if (raw && valid.includes(raw as CompetitionMethod)) {
+    return raw as CompetitionMethod;
+  }
+  return 'UNKNOWN';
+}
+
+function validateAwardMethod(raw: string | undefined): AwardMethod {
+  const valid: AwardMethod[] = [
+    'NEGOTIATION',
+    'QUALIFICATION_REVIEW',
+    'LOWEST_PRICE',
+    'TWO_STAGE',
+    'SPEC_PRICE_SIMULTANEOUS',
+    'OTHER',
+    'UNKNOWN',
+  ];
+  if (raw && valid.includes(raw as AwardMethod)) {
+    return raw as AwardMethod;
   }
   return 'UNKNOWN';
 }

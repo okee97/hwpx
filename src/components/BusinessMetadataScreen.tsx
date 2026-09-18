@@ -6,24 +6,31 @@ import {
   ClientType,
   GoverningLaw,
   ProcurementMethod,
+  CompetitionMethod,
+  AwardMethod,
+  EvidenceStatus,
   CLIENT_TYPE_LABELS,
   GOVERNING_LAW_LABELS,
   PROCUREMENT_METHOD_LABELS,
+  COMPETITION_METHOD_LABELS,
+  AWARD_METHOD_LABELS,
+  EVIDENCE_STATUS_LABELS,
 } from '../types/metadata';
 import {
   Building2,
   Scale,
-  DollarSign,
   Briefcase,
   CheckCircle2,
   Sparkles,
   RefreshCw,
-  Clock,
   History,
   AlertTriangle,
   ArrowRight,
   HelpCircle,
   FileCheck2,
+  FileSearch,
+  Quote,
+  Cpu,
 } from 'lucide-react';
 
 interface BusinessMetadataScreenProps {
@@ -41,7 +48,6 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
   initialExtracted,
   initialAuthoritative,
   onConfirmAndStartReview,
-  onNavigateToStructure,
 }) => {
   const [extracted, setExtracted] = useState<ExtractedMetadata | null>(initialExtracted || null);
   const [authoritative, setAuthoritative] = useState<AuthoritativeMetadata | null>(initialAuthoritative || null);
@@ -51,7 +57,7 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
   const [hasAutoPopulated, setHasAutoPopulated] = useState(false);
   const [isReExtracting, setIsReExtracting] = useState(false);
 
-  // Form states (No fabricated fallback numbers/strings)
+  // Form states
   const [projectName, setProjectName] = useState(
     initialAuthoritative?.project_name || initialExtracted?.project_name || projectNameDefault || ''
   );
@@ -64,6 +70,25 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
   const [governingLaw, setGoverningLaw] = useState<GoverningLaw>(
     initialAuthoritative?.governing_law || initialExtracted?.governing_law || 'UNKNOWN'
   );
+
+  // Separate Competition Method & Award Method
+  const [competitionMethod, setCompetitionMethod] = useState<CompetitionMethod>(
+    initialAuthoritative?.competition_method ||
+      initialExtracted?.competition_method ||
+      (initialExtracted?.procurement_method === 'RESTRICTED_COMPETITIVE'
+        ? 'RESTRICTED_COMPETITIVE'
+        : initialExtracted?.procurement_method === 'OPEN_COMPETITIVE'
+        ? 'OPEN_COMPETITIVE'
+        : initialExtracted?.procurement_method === 'PRIVATE_CONTRACT'
+        ? 'PRIVATE_CONTRACT'
+        : 'UNKNOWN')
+  );
+  const [awardMethod, setAwardMethod] = useState<AwardMethod>(
+    initialAuthoritative?.award_method ||
+      initialExtracted?.award_method ||
+      (initialExtracted?.procurement_method === 'NEGOTIATION' ? 'NEGOTIATION' : 'UNKNOWN')
+  );
+
   const [procurementMethod, setProcurementMethod] = useState<ProcurementMethod>(
     initialAuthoritative?.procurement_method || initialExtracted?.procurement_method || 'UNKNOWN'
   );
@@ -82,7 +107,7 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
   );
   const [note, setNote] = useState(initialAuthoritative?.note || '');
 
-  // Initialize or fetch metadata when projectId or initial props change
+  // Sync state on mount/props
   useEffect(() => {
     if (initialAuthoritative) {
       setAuthoritative(initialAuthoritative);
@@ -99,7 +124,6 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
   const fetchMetadata = async () => {
     setIsLoading(true);
     try {
-      // 1. Fetch extracted
       const extRes = await fetch(`/api/v1/projects/${projectId}/metadata/extracted`);
       let extData: ExtractedMetadata | null = null;
       if (extRes.ok) {
@@ -108,7 +132,6 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
         setExtracted(extData);
       }
 
-      // 2. Fetch authoritative
       const authRes = await fetch(`/api/v1/projects/${projectId}/metadata/authoritative`);
       if (authRes.ok) {
         const json = await authRes.json();
@@ -132,6 +155,8 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
     setClientName(data.client_name || '');
     setClientType(data.client_type || 'UNKNOWN');
     setGoverningLaw(data.governing_law || 'UNKNOWN');
+    setCompetitionMethod(data.competition_method || 'UNKNOWN');
+    setAwardMethod(data.award_method || 'UNKNOWN');
     setProcurementMethod(data.procurement_method || 'UNKNOWN');
     setBudgetAmount(data.budget_amount && data.budget_amount > 0 ? data.budget_amount : '');
     setEstimatedPrice(data.estimated_price && data.estimated_price > 0 ? data.estimated_price : '');
@@ -144,6 +169,8 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
     setClientName(data.client_name || '');
     setClientType(data.client_type || 'UNKNOWN');
     setGoverningLaw(data.governing_law || 'UNKNOWN');
+    setCompetitionMethod(data.competition_method || 'UNKNOWN');
+    setAwardMethod(data.award_method || 'UNKNOWN');
     setProcurementMethod(data.procurement_method || 'UNKNOWN');
     setBudgetAmount(data.budget_amount && data.budget_amount > 0 ? data.budget_amount : '');
     setEstimatedPrice(data.estimated_price && data.estimated_price > 0 ? data.estimated_price : '');
@@ -153,7 +180,7 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
   const handleResetToExtracted = () => {
     if (extracted) {
       populateFormFromExtracted(extracted);
-      setSaveSuccessMsg('AI 추출 원본 값으로 폼을 초기화했습니다.');
+      setSaveSuccessMsg('AI 및 파서가 추출한 원본 값으로 복원했습니다.');
       setTimeout(() => setSaveSuccessMsg(null), 3000);
     }
   };
@@ -180,8 +207,8 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
           }
           setSaveSuccessMsg(
             data.is_ai_powered
-              ? '✨ Gemini AI가 제안요청서의 선정방식 및 본문을 정독하여 사업정보를 정밀 재추출했습니다.'
-              : '사업정보를 성공적으로 재추출했습니다.'
+              ? '✨ AI Document Mapper & Specialist 파이프라인으로 사업정보를 정밀 재추출했습니다.'
+              : '사업정보를 재추출했습니다.'
           );
         }
       } else {
@@ -206,6 +233,15 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
     }
   };
 
+  // Derive legacy combined method for backward compatibility
+  const getDerivedProcurementMethod = (comp: CompetitionMethod, awd: AwardMethod): ProcurementMethod => {
+    if (awd === 'NEGOTIATION') return 'NEGOTIATION';
+    if (comp === 'RESTRICTED_COMPETITIVE') return 'RESTRICTED_COMPETITIVE';
+    if (comp === 'OPEN_COMPETITIVE') return 'OPEN_COMPETITIVE';
+    if (comp === 'PRIVATE_CONTRACT') return 'PRIVATE_CONTRACT';
+    return 'UNKNOWN';
+  };
+
   const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setIsSaving(true);
@@ -213,13 +249,16 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
 
     const parsedBudget = budgetAmount !== '' ? Number(budgetAmount) : null;
     const parsedEstimated = estimatedPrice !== '' ? Number(estimatedPrice) : null;
+    const derivedProc = getDerivedProcurementMethod(competitionMethod, awardMethod);
 
     const updatePayload: AuthoritativeMetadataUpdateDto = {
       project_name: projectName || '공공 정보화 사업',
       client_name: clientName || '',
       client_type: clientType,
       governing_law: governingLaw,
-      procurement_method: procurementMethod,
+      procurement_method: derivedProc,
+      competition_method: competitionMethod,
+      award_method: awardMethod,
       budget_amount: parsedBudget,
       estimated_price: parsedEstimated,
       project_period: projectPeriod || null,
@@ -243,7 +282,6 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
       setAuthoritative(savedAuth);
       setSaveSuccessMsg(`버전 ${savedAuth.version}으로 최종 확정 및 스냅샷 생성 완료!`);
 
-      // Trigger callback to start/re-run review with this authoritative metadata
       setTimeout(() => {
         onConfirmAndStartReview(savedAuth);
       }, 500);
@@ -252,6 +290,16 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
     } finally {
       setIsSaving(false);
     }
+  };
+
+  const renderEvidenceBadge = (fieldKey: string) => {
+    const status: EvidenceStatus = (extracted?.evidence_status as any)?.[fieldKey] || 'UNVERIFIED';
+    const info = EVIDENCE_STATUS_LABELS[status] || EVIDENCE_STATUS_LABELS.UNVERIFIED;
+    return (
+      <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold border ${info.color}`}>
+        {info.badge}
+      </span>
+    );
   };
 
   return (
@@ -265,7 +313,7 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
                 화면 2 (Screen 2)
               </span>
               <span className="text-xs font-semibold text-slate-500">
-                Metadata Extractor &amp; Authoritative 확정
+                AI Document Mapper &amp; Authoritative 확정
               </span>
               {authoritative && (
                 <span className="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
@@ -275,12 +323,12 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
             </div>
             <h2 className="text-lg sm:text-xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
               <Building2 className="w-5 h-5 text-blue-600" />
-              사업 기본정보 확인 및 법령 확정
+              사업 기본정보 검토 및 법령 확정
             </h2>
             <p className="text-xs sm:text-sm text-slate-600 max-w-3xl leading-relaxed">
-              AI가 HWP 본문 및 표에서 6대 핵심 사업 메타데이터를 자동 추출했습니다.
-              지자체 발주 여부와 적용 법령을 직접 검증 및 수정하여 <strong>Authoritative Metadata</strong>로 확정하십시오.
-              확정된 법령에 따라 <strong>Rule Engine</strong>의 법적 정합성 검사가 실행됩니다.
+              AI Document Mapper 및 도메인별 검토 AI가 추출한 사업정보입니다.
+              <strong>경쟁방법</strong>(일반/제한경쟁)과 <strong>낙찰자 결정방식</strong>(협상계약/적격심사)을 각각 검증하고,
+              적용 법령을 확정하여 <strong>Rule Engine</strong>의 법적 정합성 심사를 시작하십시오.
             </p>
           </div>
 
@@ -290,23 +338,23 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
               onClick={handleReExtractWithAI}
               disabled={isReExtracting}
               className="px-3.5 py-2 rounded-lg text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 transition flex items-center gap-1.5 shadow-xs disabled:opacity-50"
-              title="Gemini AI로 문서 본문 및 표를 정독하여 사업정보를 정밀 재추출합니다."
+              title="AI Document Mapper와 Specialist를 가동하여 사업정보를 정밀 재분석합니다."
             >
               {isReExtracting ? (
                 <RefreshCw className="w-3.5 h-3.5 text-indigo-600 animate-spin" />
               ) : (
                 <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
               )}
-              <span>{isReExtracting ? 'AI 본문 정밀 분석 중...' : 'Gemini AI 재분석'}</span>
+              <span>{isReExtracting ? 'AI Mapper 분석 중...' : 'AI 파이프라인 재분석'}</span>
             </button>
             <button
               type="button"
               onClick={handleResetToExtracted}
               className="px-3 py-2 rounded-lg text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 transition flex items-center gap-1.5"
-              title="AI가 추출한 원본 값으로 복원"
+              title="추출 원본 값으로 복원"
             >
               <RefreshCw className="w-3.5 h-3.5 text-slate-500" />
-              <span>AI 추출값 초기화</span>
+              <span>추출값 복원</span>
             </button>
             <button
               type="button"
@@ -328,65 +376,94 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
           </div>
         )}
 
-        {/* Auto-extracted confirmation banner */}
+        {/* Evidence Status Summary Banner */}
         {hasAutoPopulated && (
-          <div className="mt-4 p-3.5 rounded-xl bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 text-blue-900 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+          <div className="mt-4 p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
             <div className="flex items-center gap-2.5">
               <span className="p-1 rounded-md bg-blue-600 text-white shrink-0">
-                <Sparkles className="w-3.5 h-3.5" />
+                <FileSearch className="w-3.5 h-3.5" />
               </span>
               <div>
-                <span className="font-bold">
-                  {extracted?.is_ai_powered ? 'Gemini AI 문서 정독 사업정보 추출 완료: ' : '한글 문서 사업정보 자동 입력: '}
+                <span className="font-bold text-slate-900">
+                  {extracted?.is_ai_powered ? 'AI Document Mapper 정밀 근거 검증 완료: ' : '문서 사업정보 추출 완료: '}
                 </span>
-                <span className="text-blue-800">
+                <span className="text-slate-600">
                   {clientName ? `수요기관(${clientName}), ` : ''}
-                  계약방식({PROCUREMENT_METHOD_LABELS[procurementMethod]?.label || '협상에 의한 계약'})
-                  {budgetAmount ? `, 예산(${Number(budgetAmount).toLocaleString()}원)` : ', 예산(문서 미기재)'}
-                  {projectPeriod ? `, 기간(${projectPeriod})` : ''} 정보가 분석되었습니다.
+                  경쟁방식({COMPETITION_METHOD_LABELS[competitionMethod]?.label || '미확인'}),
+                  낙찰방식({AWARD_METHOD_LABELS[awardMethod]?.label || '미확인'})
+                  {budgetAmount ? `, 예산(${Number(budgetAmount).toLocaleString()}원)` : ', 예산(미기재)'}
                 </span>
               </div>
             </div>
-            <span className="inline-flex px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-blue-200/80 text-blue-900 shrink-0 self-start sm:self-center">
-              AI 신뢰도 {Math.round((extracted?.confidence_scores?.procurement_method || extracted?.confidence_scores?.client_name || 0.95) * 100)}%
-            </span>
+            <div className="flex items-center gap-2 shrink-0 self-start sm:self-center">
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-mono font-semibold bg-white border border-slate-200 text-slate-700">
+                <Cpu className="w-3 h-3 text-blue-600" />
+                {extracted?.model_used || 'gemini-3.8-flash'}
+              </span>
+            </div>
           </div>
         )}
 
-        {/* AI Procurement Method Reasoning Alert */}
+        {/* AI Method Reasoning & Evidence Quotes */}
         {extracted?.procurement_method_reason && (
-          <div className="mt-3 p-3.5 rounded-xl bg-indigo-50/90 border border-indigo-200 text-xs text-indigo-950 flex items-start gap-2.5 shadow-2xs">
-            <Sparkles className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
-            <div className="space-y-1">
+          <div className="mt-3 p-3.5 rounded-xl bg-indigo-50/90 border border-indigo-200 text-xs text-indigo-950 space-y-2 shadow-2xs">
+            <div className="flex items-center justify-between">
               <div className="font-bold text-indigo-900 flex items-center gap-2">
-                <span>AI 계약방법 문맥 정밀 분석 결과</span>
-                <span className="px-1.5 py-0.2 rounded text-[10px] bg-indigo-200/80 text-indigo-800 font-bold">
-                  단순 키워드 매칭 오류 방지
-                </span>
+                <Sparkles className="w-4 h-4 text-indigo-600 shrink-0" />
+                <span>AI 판단 근거 및 원문 인용 (Source Quotes)</span>
               </div>
-              <p className="text-slate-700 text-[11px] leading-relaxed">
-                {extracted.procurement_method_reason}
-              </p>
-              {extracted.extracted_snippets && Object.keys(extracted.extracted_snippets).length > 0 && (
-                <div className="pt-1.5 flex flex-wrap gap-2 text-[10px]">
-                  {extracted.extracted_snippets.selection_method && (
-                    <span className="px-2 py-1 rounded bg-white/80 border border-indigo-200 text-slate-700">
-                      <strong>선정방식 발췌:</strong> {extracted.extracted_snippets.selection_method}
-                    </span>
-                  )}
-                  {extracted.extracted_snippets.budget && (
-                    <span className="px-2 py-1 rounded bg-white/80 border border-indigo-200 text-slate-700">
-                      <strong>예산 발췌:</strong> {extracted.extracted_snippets.budget}
-                    </span>
-                  )}
-                  {extracted.extracted_snippets.period && (
-                    <span className="px-2 py-1 rounded bg-white/80 border border-indigo-200 text-slate-700">
-                      <strong>기간 발췌:</strong> {extracted.extracted_snippets.period}
-                    </span>
-                  )}
-                </div>
-              )}
+              <span className="px-2 py-0.5 rounded text-[10px] bg-indigo-200/80 text-indigo-900 font-semibold">
+                편향 없는 사실 기반 판정
+              </span>
             </div>
+            <p className="text-slate-700 text-[11px] leading-relaxed">
+              {extracted.procurement_method_reason}
+            </p>
+
+            {extracted.evidence_quotes && Object.keys(extracted.evidence_quotes).length > 0 && (
+              <div className="pt-2 grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+                {extracted.evidence_quotes.competition_method && (
+                  <div className="p-2 rounded bg-white/90 border border-indigo-100 flex items-start gap-1.5">
+                    <Quote className="w-3.5 h-3.5 text-indigo-500 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold text-slate-800">[경쟁방법] </span>
+                      <span className="text-slate-700">"{extracted.evidence_quotes.competition_method.quote}"</span>
+                      <span className="ml-1 text-[10px] font-mono text-slate-400">({extracted.evidence_quotes.competition_method.block_id})</span>
+                    </div>
+                  </div>
+                )}
+                {extracted.evidence_quotes.award_method && (
+                  <div className="p-2 rounded bg-white/90 border border-indigo-100 flex items-start gap-1.5">
+                    <Quote className="w-3.5 h-3.5 text-indigo-500 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold text-slate-800">[낙찰자결정] </span>
+                      <span className="text-slate-700">"{extracted.evidence_quotes.award_method.quote}"</span>
+                      <span className="ml-1 text-[10px] font-mono text-slate-400">({extracted.evidence_quotes.award_method.block_id})</span>
+                    </div>
+                  </div>
+                )}
+                {extracted.evidence_quotes.budget_amount && (
+                  <div className="p-2 rounded bg-white/90 border border-indigo-100 flex items-start gap-1.5">
+                    <Quote className="w-3.5 h-3.5 text-indigo-500 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold text-slate-800">[사업예산] </span>
+                      <span className="text-slate-700">"{extracted.evidence_quotes.budget_amount.quote}"</span>
+                      <span className="ml-1 text-[10px] font-mono text-slate-400">({extracted.evidence_quotes.budget_amount.block_id})</span>
+                    </div>
+                  </div>
+                )}
+                {extracted.evidence_quotes.project_period && (
+                  <div className="p-2 rounded bg-white/90 border border-indigo-100 flex items-start gap-1.5">
+                    <Quote className="w-3.5 h-3.5 text-indigo-500 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold text-slate-800">[사업기간] </span>
+                      <span className="text-slate-700">"{extracted.evidence_quotes.project_period.quote}"</span>
+                      <span className="ml-1 text-[10px] font-mono text-slate-400">({extracted.evidence_quotes.project_period.block_id})</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -401,18 +478,21 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
           <div className="flex items-center justify-between border-b border-slate-100 pb-3">
             <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
               <Briefcase className="w-4 h-4 text-blue-600" />
-              <span>핵심 사업정보 입력 및 수정 (6대 필드)</span>
+              <span>핵심 사업정보 검증 및 확정 (Authoritative Inputs)</span>
             </h3>
             <span className="text-[11px] text-slate-500">
-              * 필드를 수정하면 자동으로 신규 스냅샷이 생성됩니다.
+              * 담당자가 검토 후 확정하면 불변 스냅샷이 생성됩니다.
             </span>
           </div>
 
           {/* Field 1: Project Name */}
           <div>
-            <label className="block text-xs font-bold text-slate-700 mb-1.5">
-              사업명 (과업명)
-            </label>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs font-bold text-slate-700">
+                사업명 (과업명)
+              </label>
+              {renderEvidenceBadge('project_name')}
+            </div>
             <input
               type="text"
               value={projectName}
@@ -430,11 +510,7 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
                 <label className="text-xs font-bold text-slate-700">
                   수요기관명 (발주처)
                 </label>
-                {extracted?.confidence_scores.client_name && (
-                  <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
-                    AI 신뢰도 {(extracted.confidence_scores.client_name * 100).toFixed(0)}%
-                  </span>
-                )}
+                {renderEvidenceBadge('client_name')}
               </div>
               <input
                 type="text"
@@ -445,14 +521,17 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
                 placeholder="예: 서울특별시 강남구"
               />
               <p className="mt-1 text-[11px] text-slate-500">
-                AI 근거: <code>{extracted?.source_references.client_name || 'para_1'}</code> 문단
+                AI 참조: <code>{extracted?.source_references?.client_name || 'para_1'}</code> 문단
               </p>
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                수요기관 유형 (Client Type)
-              </label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs font-bold text-slate-700">
+                  수요기관 유형 (Client Type)
+                </label>
+                {renderEvidenceBadge('client_type')}
+              </div>
               <select
                 value={clientType}
                 onChange={(e) => handleAutoRecommendLaw(e.target.value as ClientType)}
@@ -478,9 +557,7 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
                 <Scale className="w-4 h-4 text-blue-600" />
                 <span>적용 계약법령 (Governing Law)</span>
               </label>
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-blue-100 text-blue-800">
-                Rule Engine 기준값
-              </span>
+              {renderEvidenceBadge('governing_law')}
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
@@ -523,32 +600,32 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
             )}
           </div>
 
-          {/* Field 5: Procurement Method */}
-          <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="text-xs font-bold text-slate-700">
-                계약방법 (Procurement Method)
-              </label>
-              {extracted?.confidence_scores?.procurement_method && (
-                <span className="text-[10px] font-semibold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200">
-                  AI 분석 신뢰도 {(extracted.confidence_scores.procurement_method * 100).toFixed(0)}%
-                </span>
-              )}
+          {/* Field 5-A: Competition Method (입찰/경쟁 형태) */}
+          <div className="p-4 rounded-xl bg-slate-50/70 border border-slate-200 space-y-2">
+            <div className="flex items-center justify-between mb-1">
+              <div>
+                <label className="text-xs font-bold text-slate-900">
+                  1. 입찰(경쟁) 형태 (Competition Method)
+                </label>
+                <p className="text-[11px] text-slate-500">참가 자격 및 경쟁 범위 결정</p>
+              </div>
+              {renderEvidenceBadge('competition_method')}
             </div>
+
             <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-              {(['NEGOTIATION', 'RESTRICTED_COMPETITIVE', 'OPEN_COMPETITIVE', 'PRIVATE_CONTRACT', 'UNKNOWN'] as ProcurementMethod[]).map(
+              {(['RESTRICTED_COMPETITIVE', 'OPEN_COMPETITIVE', 'NOMINATED_COMPETITIVE', 'PRIVATE_CONTRACT', 'UNKNOWN'] as CompetitionMethod[]).map(
                 (method) => {
-                  const info = PROCUREMENT_METHOD_LABELS[method];
-                  const isSelected = procurementMethod === method;
+                  const info = COMPETITION_METHOD_LABELS[method];
+                  const isSelected = competitionMethod === method;
                   return (
                     <button
                       key={method}
                       type="button"
-                      onClick={() => setProcurementMethod(method)}
+                      onClick={() => setCompetitionMethod(method)}
                       className={`p-2.5 rounded-lg border text-center transition-all ${
                         isSelected
-                          ? 'bg-blue-50 border-blue-500 text-blue-900 font-bold shadow-xs'
-                          : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                          ? 'bg-blue-600 text-white font-bold shadow-xs border-blue-600'
+                          : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
                       }`}
                     >
                       <div className="text-xs">{info.label}</div>
@@ -557,12 +634,58 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
                 }
               )}
             </div>
-            {extracted?.procurement_method_reason && (
-              <div className="mt-2 text-[11px] text-slate-600 bg-slate-50 p-2.5 rounded-lg border border-slate-200 flex items-start gap-2">
-                <span className="font-bold text-indigo-700 shrink-0">AI 판정 근거:</span>
-                <span>{extracted.procurement_method_reason}</span>
+            <p className="text-[11px] text-slate-500 pt-0.5">
+              설명: {COMPETITION_METHOD_LABELS[competitionMethod]?.desc}
+            </p>
+          </div>
+
+          {/* Field 5-B: Award Method (낙찰자 결정방식) */}
+          <div className="p-4 rounded-xl bg-slate-50/70 border border-slate-200 space-y-2">
+            <div className="flex items-center justify-between mb-1">
+              <div>
+                <label className="text-xs font-bold text-slate-900">
+                  2. 낙찰자 결정방식 (Award Method)
+                </label>
+                <p className="text-[11px] text-slate-500">평가 기준 및 선정 절차</p>
               </div>
-            )}
+              {renderEvidenceBadge('award_method')}
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {(['NEGOTIATION', 'QUALIFICATION_REVIEW', 'LOWEST_PRICE', 'TWO_STAGE'] as AwardMethod[]).map(
+                (method) => {
+                  const info = AWARD_METHOD_LABELS[method];
+                  const isSelected = awardMethod === method;
+                  return (
+                    <button
+                      key={method}
+                      type="button"
+                      onClick={() => setAwardMethod(method)}
+                      className={`p-2.5 rounded-lg border text-center transition-all ${
+                        isSelected
+                          ? 'bg-indigo-600 text-white font-bold shadow-xs border-indigo-600'
+                          : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      <div className="text-xs">{info.label}</div>
+                    </button>
+                  );
+                }
+              )}
+            </div>
+            <p className="text-[11px] text-slate-500 pt-0.5">
+              설명: {AWARD_METHOD_LABELS[awardMethod]?.desc}
+            </p>
+          </div>
+
+          {/* Combined summary tag */}
+          <div className="p-2.5 rounded-lg bg-blue-50 border border-blue-200 text-xs text-blue-900 flex items-center justify-between">
+            <span className="font-semibold">
+              종합 계약 분류: <strong>{COMPETITION_METHOD_LABELS[competitionMethod]?.label}</strong> + <strong>{AWARD_METHOD_LABELS[awardMethod]?.label}</strong>
+            </span>
+            <span className="text-[11px] text-blue-700 font-mono">
+              (호환코드: {getDerivedProcurementMethod(competitionMethod, awardMethod)})
+            </span>
           </div>
 
           {/* Field 6 & 7: Budget & Estimated Price */}
@@ -572,15 +695,7 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
                 <label className="text-xs font-bold text-slate-700">
                   사업예산 (원, 부가세 포함)
                 </label>
-                {budgetAmount !== '' && Number(budgetAmount) > 0 ? (
-                  <span className="text-[10px] font-mono text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">
-                    금액 확인됨
-                  </span>
-                ) : (
-                  <span className="text-[10px] text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
-                    문서 미기재 (직접 입력 가능)
-                  </span>
-                )}
+                {renderEvidenceBadge('budget_amount')}
               </div>
               <div className="relative">
                 <input
@@ -618,11 +733,7 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
                 <label className="text-xs font-bold text-slate-700">
                   추정가격 (원, 부가세 제외)
                 </label>
-                {estimatedPrice !== '' && Number(estimatedPrice) > 0 && (
-                  <span className="text-[10px] text-slate-500 font-mono">
-                    부가세 제외 (약 10%)
-                  </span>
-                )}
+                {renderEvidenceBadge('estimated_price')}
               </div>
               <div className="relative">
                 <input
@@ -659,15 +770,7 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
                 <label className="text-xs font-bold text-slate-700">
                   사업기간
                 </label>
-                {projectPeriod ? (
-                  <span className="text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">
-                    추출/입력 완료
-                  </span>
-                ) : (
-                  <span className="text-[10px] text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
-                    문서 미기재
-                  </span>
-                )}
+                {renderEvidenceBadge('project_period')}
               </div>
               <input
                 type="text"
@@ -687,7 +790,7 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
                 value={note}
                 onChange={(e) => setNote(e.target.value)}
                 className="w-full px-3.5 py-2 rounded-lg border border-slate-300 text-sm text-slate-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 placeholder:text-slate-400 placeholder:text-xs"
-                placeholder="예: 사업자선정방식 협상계약 확인, 지자체 발주 검증 완료"
+                placeholder="예: 제한경쟁 및 협상계약 확인, 지자체 발주 검증 완료"
               />
             </div>
           </div>
@@ -730,10 +833,11 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
                 </div>
                 <div className="text-slate-600 space-y-0.5 text-[11px]">
                   <div>수요기관: <strong>{extracted?.client_name || '미감지'}</strong></div>
-                  <div>계약방법: <strong>{PROCUREMENT_METHOD_LABELS[extracted?.procurement_method || 'NEGOTIATION']?.label}</strong></div>
+                  <div>경쟁방법: <strong>{COMPETITION_METHOD_LABELS[extracted?.competition_method || 'UNKNOWN']?.label}</strong></div>
+                  <div>낙찰방법: <strong>{AWARD_METHOD_LABELS[extracted?.award_method || 'UNKNOWN']?.label}</strong></div>
                   <div>사업예산: {extracted?.budget_amount ? `${Number(extracted.budget_amount).toLocaleString()}원` : '문서 미기재'}</div>
                   <div>사업기간: {extracted?.project_period || '문서 미기재'}</div>
-                  <div>추출엔진: <span className="text-indigo-700 font-semibold">{extracted?.is_ai_powered ? 'Gemini 2.5 Flash' : '규칙 엔진'}</span></div>
+                  <div>엔진: <span className="text-indigo-700 font-semibold">{extracted?.analysis_engine === 'AI' ? (extracted.model_used || 'Gemini AI') : '규칙 엔진'}</span></div>
                 </div>
               </div>
 
@@ -747,7 +851,8 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
                 </div>
                 <div className="text-slate-600 space-y-0.5 text-[11px]">
                   <div>확정기관: <strong>{authoritative?.client_name || clientName || '미지정'}</strong></div>
-                  <div>확정방법: <strong>{PROCUREMENT_METHOD_LABELS[authoritative?.procurement_method || procurementMethod]?.label}</strong></div>
+                  <div>확정경쟁: <strong>{COMPETITION_METHOD_LABELS[authoritative?.competition_method || competitionMethod]?.label}</strong></div>
+                  <div>확정낙찰: <strong>{AWARD_METHOD_LABELS[authoritative?.award_method || awardMethod]?.label}</strong></div>
                   <div>확정법령: <strong className="text-emerald-800">{GOVERNING_LAW_LABELS[authoritative?.governing_law || governingLaw]?.short}</strong></div>
                   <div>확정예산: {authoritative?.budget_amount ? `${Number(authoritative.budget_amount).toLocaleString()}원` : '미기재 (유예)'}</div>
                   <div>확정자: {authoritative?.confirmed_by || 'user_officer'}</div>
@@ -759,7 +864,41 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
             </div>
           </div>
 
-          {/* Quick Preset Testing Card (For demonstration) */}
+          {/* Evidence Status Legend */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-2.5">
+            <h4 className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+              <FileCheck2 className="w-3.5 h-3.5 text-slate-600" />
+              <span>근거 상태 범례 (Evidence Status)</span>
+            </h4>
+            <div className="space-y-1.5 text-[11px]">
+              <div className="flex items-center gap-2">
+                <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                  ● 문서 명시
+                </span>
+                <span className="text-slate-600">문서 본문/표에 단어 및 숫자가 직접 기재됨</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                  ● 문맥상 판단
+                </span>
+                <span className="text-slate-600">수요기관 명칭 등으로부터 확실하게 도출됨</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                  ● 산출/계산값
+                </span>
+                <span className="text-slate-600">총예산 기준 부가세(10%) 역산 공급가액</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200">
+                  ○ 확인 불가
+                </span>
+                <span className="text-slate-600">문서에 기재되지 않음 (담당자 직접 입력 필요)</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Quick Preset Testing Card */}
           <div className="bg-slate-50 rounded-2xl border border-slate-200 p-5 shadow-xs space-y-3">
             <h4 className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
               <History className="w-3.5 h-3.5 text-slate-600" />
@@ -776,13 +915,15 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
                   setClientName('서울특별시 강남구');
                   setClientType('LOCAL_GOVERNMENT');
                   setGoverningLaw('LOCAL_CONTRACT_ACT');
+                  setCompetitionMethod('RESTRICTED_COMPETITIVE');
+                  setAwardMethod('NEGOTIATION');
                   setNote('지자체 발주 시나리오 (국가계약법 혼용 시 위반 탐지)');
                 }}
                 className="w-full text-left p-2.5 rounded-lg bg-white border border-slate-200 hover:border-blue-300 text-xs font-medium transition"
               >
                 <div className="font-bold text-slate-900">시나리오 A: 지방자치단체 (강남구)</div>
                 <div className="text-[11px] text-slate-500">
-                  지방계약법 적용 확정 → 본문의 국가계약법 조항 즉시 적발
+                  제한경쟁 + 협상계약 + 지방계약법 확정 → 국가계약법 조항 즉시 적발
                 </div>
               </button>
 
@@ -792,13 +933,15 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
                   setClientName('행정안전부');
                   setClientType('CENTRAL_GOVERNMENT');
                   setGoverningLaw('STATE_CONTRACT_ACT');
+                  setCompetitionMethod('OPEN_COMPETITIVE');
+                  setAwardMethod('NEGOTIATION');
                   setNote('국가기관 발주 시나리오');
                 }}
                 className="w-full text-left p-2.5 rounded-lg bg-white border border-slate-200 hover:border-blue-300 text-xs font-medium transition"
               >
                 <div className="font-bold text-slate-900">시나리오 B: 중앙행정기관 (행안부)</div>
                 <div className="text-[11px] text-slate-500">
-                  국가계약법 적용 확정 → 정상 처리
+                  일반경쟁 + 협상계약 + 국가계약법 확정 → 정상 처리
                 </div>
               </button>
             </div>

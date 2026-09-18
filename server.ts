@@ -272,6 +272,22 @@ const extractBlocksFromParsed = (parsedJson: any): DocumentBlock[] => {
       }
     });
   }
+
+  // Fallback: If no blocks extracted from sections, but raw_text exists
+  if (blocks.length === 0 && parsedJson?.raw_text && typeof parsedJson.raw_text === 'string') {
+    const lines = parsedJson.raw_text.split('\n');
+    lines.forEach((line: string, idx: number) => {
+      if (line.trim()) {
+        blocks.push({
+          block_id: `para_0_${idx}`,
+          block_type: 'PARAGRAPH',
+          native_locator: { section_index: 0, paragraph_index: idx },
+          text: line.trim(),
+        });
+      }
+    });
+  }
+
   return blocks;
 };
 
@@ -430,32 +446,27 @@ app.post('/api/v1/documents/upload', (req, res) => {
   });
 });
 
-const RULES = [
-  {
-    rule_id: 'RULE-KEYWORD-001',
-    rule_name: '주민등록번호 요구 탐지',
-    keyword: '주민등록번호',
-    category: 'RULE_FIX' as const,
-    severity: 'HIGH' as const,
-    title: '주민등록번호 수집/요구 조항 탐지',
-    basis:
-      '개인정보보호법 제24조의2(주민등록번호 처리의 제한)에 따라 법령에서 구체적으로 주민등록번호 처리를 요구하거나 허용한 경우를 제외하고는 공문서, 서식 및 계약서상 주민등록번호의 수집 및 기재가 원칙적으로 금지됩니다.',
-    recommendation:
-      "주민등록번호 요구 문구를 삭제하고, '생년월일(YYYY.MM.DD)' 또는 마이핀/아이핀 등 안전한 비식별 대체 수단으로 변경하십시오.",
-  },
-  {
-    rule_id: 'RULE-KEYWORD-002',
-    rule_name: '자동연장 문구 탐지',
-    keyword: '자동연장',
-    category: 'CONDITIONAL' as const,
-    severity: 'MEDIUM' as const,
-    title: '계약 묵시적 자동연장 조항 점검 (상호협의 절차 권고)',
-    basis:
-      '약관의 규제에 관한 법률 및 용역계약 일반조건에 따라, 별도 서면 합의 없이 묵시적으로 계약기간이 자동 갱신되는 규정은 양 당사자의 갱신·종료 의사표시 기회를 제한할 우려가 있어 명시적 서면 합의 절차가 권장됩니다.',
-    recommendation:
-      "자동연장 문구를 '계약 만료 30일 전까지 서면으로 상호 협의하여 갱신 여부를 결정한다'와 같이 당사자 간 명시적 의사합치 절차로 변경하십시오.",
-  },
-];
+function loadRulesFromJson(): any[] {
+  try {
+    const rulesPath = path.join(process.cwd(), 'server', 'rules.json');
+    if (fs.existsSync(rulesPath)) {
+      const raw = fs.readFileSync(rulesPath, 'utf-8');
+      return JSON.parse(raw);
+    }
+  } catch (err) {
+    console.warn('[Rules Loader] Failed to read server/rules.json:', err);
+  }
+  return [];
+}
+
+function formatRuleBasis(basis: any): string {
+  if (Array.isArray(basis)) {
+    return basis
+      .map((b) => `${b.law_name}${b.clause ? ` ${b.clause}` : ''}: ${b.content}`)
+      .join('\n\n');
+  }
+  return typeof basis === 'string' ? basis : '';
+}
 
 function evaluateRuleEngine(projectId: string, blocks: DocumentBlock[]): Finding[] {
 
@@ -469,11 +480,13 @@ function evaluateRuleEngine(projectId: string, blocks: DocumentBlock[]): Finding
   const authoritativeMeta = authoritativeStore.get(projectId);
   const generatedFindings: Finding[] = [];
   const existingProjectMap = findingsStore.get(projectId) || new Map<string, Finding>();
+  const rulesList = loadRulesFromJson();
 
-  // 1. Evaluate Keyword Rules (Rule 1 & Rule 2)
+  // 1. Evaluate Keyword Rules (RULE-KEYWORD-*)
+  const keywordRules = rulesList.filter((r: any) => r.rule_id.startsWith('RULE-KEYWORD-'));
   blocks.forEach((block) => {
-    RULES.forEach((rule) => {
-      if (block.text.includes(rule.keyword)) {
+    keywordRules.forEach((rule: any) => {
+      if (rule.keyword && block.text.includes(rule.keyword)) {
         const findingId = `finding-${rule.rule_id.toLowerCase()}-${block.block_id}`;
         const existing = existingProjectMap.get(findingId);
 
@@ -494,7 +507,7 @@ function evaluateRuleEngine(projectId: string, blocks: DocumentBlock[]): Finding
               text: block.text,
             },
           ],
-          basis: rule.basis,
+          basis: formatRuleBasis(rule.basis),
           recommendation: rule.recommendation,
           decision: existing ? existing.decision : 'PENDING',
           decision_reason: existing ? existing.decision_reason : null,
@@ -515,6 +528,7 @@ function evaluateRuleEngine(projectId: string, blocks: DocumentBlock[]): Finding
       : false;
 
     if (isLocalGov) {
+      const metaRule = rulesList.find((r: any) => r.rule_id === 'RULE-META-001');
       const stateLawKeywords = [
         '국가를 당사자로 하는 계약에 관한 법률',
         '국가를 당사자로 하는 계약',
@@ -528,11 +542,11 @@ function evaluateRuleEngine(projectId: string, blocks: DocumentBlock[]): Finding
           const metaFinding: Finding = {
             finding_id: findingId,
             project_id: projectId,
-            rule_id: 'RULE-META-001',
-            rule_name: '수요기관 유형과 적용 법령 불일치 탐지',
-            category: 'RULE_FIX',
-            severity: 'HIGH',
-            title: '지방자치단체 발주 사업에 국가계약법 조항 혼용 탐지',
+            rule_id: metaRule?.rule_id || 'RULE-META-001',
+            rule_name: metaRule?.rule_name || '수요기관 유형과 적용 법령 불일치 탐지',
+            category: metaRule?.category || 'RULE_FIX',
+            severity: metaRule?.severity || 'HIGH',
+            title: metaRule?.title || '지방자치단체 발주 사업에 국가계약법 조항 혼용 탐지',
             original_text: block.text,
             matched_keyword: kw,
             source_refs: [
@@ -542,9 +556,9 @@ function evaluateRuleEngine(projectId: string, blocks: DocumentBlock[]): Finding
                 text: block.text,
               },
             ],
-            basis:
+            basis: formatRuleBasis(metaRule?.basis) ||
               '지방자치단체를 당사자로 하는 계약에 관한 법률 제4조(다른 법률과의 관계)에 의거, 지방자치단체가 발주하는 용역/공사 계약은 지방계약법이 배타적으로 적용되며 국가계약법 규정을 직접 원용할 수 없습니다.',
-            recommendation:
+            recommendation: metaRule?.recommendation ||
               "본 사업은 지방자치단체 발주(확정: 지방계약법 적용 대상)이므로, '국가를 당사자로 하는 계약에 관한 법률' 조항을 '지방자치단체를 당사자로 하는 계약에 관한 법률(지방계약법)' 및 동법 시행령 조항으로 수정하십시오.",
             decision: existing ? existing.decision : 'PENDING',
             decision_reason: existing ? existing.decision_reason : null,
@@ -565,12 +579,13 @@ function evaluateRuleEngine(projectId: string, blocks: DocumentBlock[]): Finding
   return generatedFindings;
 }
 
-function resolveBlocksFromPayload(payload: any): DocumentBlock[] {
-  let blocks: DocumentBlock[] = [];
+function resolveBlocksFromPayload(payload: any, projectId?: string): DocumentBlock[] {
   if (Array.isArray(payload.blocks) && payload.blocks.length > 0) {
-    blocks = payload.blocks;
-  } else if (payload.raw_text && typeof payload.raw_text === 'string') {
+    return payload.blocks;
+  }
+  if (payload.raw_text && typeof payload.raw_text === 'string' && payload.raw_text.trim()) {
     const lines = payload.raw_text.split('\n');
+    const blocks: DocumentBlock[] = [];
     lines.forEach((line: string, idx: number) => {
       if (line.trim()) {
         blocks.push({
@@ -581,46 +596,22 @@ function resolveBlocksFromPayload(payload: any): DocumentBlock[] {
         });
       }
     });
-  } else {
-    blocks = [
-      {
-        block_id: 'para_1',
-        block_type: 'PARAGRAPH',
-        native_locator: { section_index: 0, paragraph_index: 0 },
-        text: '2026년도 인공지능(AI) 기반 공문서 자동 검토 시스템 도입 추진 계획 (서울특별시 강남구)',
-        style_name: '제목',
-      },
-      {
-        block_id: 'para_4',
-        block_type: 'PARAGRAPH',
-        native_locator: { section_index: 0, paragraph_index: 3 },
-        text: '나. 비공개 민감 정보(주민등록번호, 계좌번호 등)의 외부 유출 사전 차단 필터링 구축',
-        style_name: '개요 2',
-      },
-      {
-        block_id: 'para_7',
-        block_type: 'PARAGRAPH',
-        native_locator: { section_index: 0, paragraph_index: 6 },
-        text: '라. 본 용역의 계약 방식은 국가를 당사자로 하는 계약에 관한 법률 시행령 제43조에 따른 협상에 의한 계약을 적용한다.',
-        style_name: '개요 2',
-      },
-      {
-        block_id: 'para_10',
-        block_type: 'PARAGRAPH',
-        native_locator: { section_index: 0, paragraph_index: 9 },
-        text: '다. 본 계약은 기간 만료 30일 전까지 서면 이의가 없는 경우 동일한 조건으로 1년간 자동연장되는 것으로 본다.',
-        style_name: '개요 2',
-      },
-    ];
+    return blocks;
   }
-  return blocks;
+  if (projectId) {
+    const cached = parsedDocCache.get(projectId);
+    if (cached?.blocks && cached.blocks.length > 0) {
+      return cached.blocks;
+    }
+  }
+  return [];
 }
 
 // POST /api/v1/projects/:id/rules/execute
 app.post('/api/v1/projects/:id/rules/execute', (req, res) => {
   const projectId = req.params.id;
   const payload = req.body || {};
-  const blocks = resolveBlocksFromPayload(payload);
+  const blocks = resolveBlocksFromPayload(payload, projectId);
 
   const generatedFindings = evaluateRuleEngine(projectId, blocks);
   const existingProjectMap = findingsStore.get(projectId) || new Map<string, Finding>();
@@ -632,7 +623,7 @@ app.post('/api/v1/projects/:id/rules/execute', (req, res) => {
       project_id: projectId,
       total_findings: generatedFindings.length,
       findings: Array.from(existingProjectMap.values()),
-      executed_rules_count: RULES.length + 1,
+      executed_rules_count: loadRulesFromJson().length,
       executed_at: new Date().toISOString(),
     },
   });
@@ -643,7 +634,7 @@ app.post('/api/v1/projects/:id/rules/execute', (req, res) => {
 app.post('/api/v1/projects/:id/reviews', async (req, res) => {
   const projectId = req.params.id;
   const payload = req.body || {};
-  const blocks = resolveBlocksFromPayload(payload);
+  const blocks = resolveBlocksFromPayload(payload, projectId);
   const rawText = payload.raw_text || '';
 
   try {
@@ -885,6 +876,18 @@ app.put('/api/v1/projects/:id/metadata/authoritative', (req, res) => {
     client_type: payload.client_type,
     governing_law: payload.governing_law,
     procurement_method: payload.procurement_method,
+    competition_method:
+      payload.competition_method ||
+      (payload.procurement_method === 'RESTRICTED_COMPETITIVE'
+        ? 'RESTRICTED_COMPETITIVE'
+        : payload.procurement_method === 'OPEN_COMPETITIVE'
+        ? 'OPEN_COMPETITIVE'
+        : payload.procurement_method === 'PRIVATE_CONTRACT'
+        ? 'PRIVATE_CONTRACT'
+        : 'UNKNOWN'),
+    award_method:
+      payload.award_method ||
+      (payload.procurement_method === 'NEGOTIATION' ? 'NEGOTIATION' : 'UNKNOWN'),
     budget_amount: payload.budget_amount ?? null,
     estimated_price: payload.estimated_price ?? null,
     project_period: payload.project_period ?? null,
