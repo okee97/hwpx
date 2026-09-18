@@ -128,12 +128,27 @@ def parse_hwpx(file_path):
                                             if t.tag.split('}')[-1] == 't' and t.text:
                                                 c_texts.append(t.text)
                                         cell_text = clean_text(" ".join(c_texts))
+                                        row_span = 1
+                                        col_span = 1
+                                        for attr_k, attr_v in tc.attrib.items():
+                                            attr_clean = attr_k.split('}')[-1].lower()
+                                            if attr_clean in ('rowspan', 'row_span', 'spanrow'):
+                                                try:
+                                                    row_span = max(1, int(attr_v))
+                                                except (ValueError, TypeError):
+                                                    pass
+                                            elif attr_clean in ('colspan', 'col_span', 'spancol'):
+                                                try:
+                                                    col_span = max(1, int(attr_v))
+                                                except (ValueError, TypeError):
+                                                    pass
+
                                         cells.append({
                                             "cell_id": f"c_{sec_idx}_{tbl_idx}_{r_idx}_{c_idx}",
                                             "row": r_idx,
                                             "col": c_idx,
-                                            "row_span": 1,
-                                            "col_span": 1,
+                                            "row_span": row_span,
+                                            "col_span": col_span,
                                             "text": cell_text,
                                             "is_header": r_idx == 0
                                         })
@@ -170,6 +185,8 @@ def parse_hwpx(file_path):
             meta["page_count"] = max(1, total_para_count // 15 + 1)
 
             return {
+                "parse_status": "SUCCESS",
+                "parse_quality": "MEDIUM",
                 "metadata": meta,
                 "sections": sections_data,
                 "raw_text": raw_text,
@@ -188,13 +205,13 @@ def parse_hwp5(file_path):
 
     meta = {
         "title": os.path.splitext(os.path.basename(file_path))[0],
-        "author": "공공행정기안자",
+        "author": "",
         "created_date": "",
         "modified_date": "",
         "hwp_version": "5.0.3.0",
         "is_compressed": True,
         "is_encrypted": False,
-        "page_count": 2,
+        "page_count": 1,
         "paragraph_count": 0,
         "table_count": 0,
         "character_count": 0,
@@ -296,6 +313,8 @@ def parse_hwp5(file_path):
     }]
 
     return {
+        "parse_status": "SUCCESS",
+        "parse_quality": "LOW",
         "metadata": meta,
         "sections": sections,
         "raw_text": "\n".join(filtered_lines),
@@ -321,41 +340,29 @@ def main():
     if not result or not result.get("raw_text"):
         result = parse_hwp5(file_path)
 
-    # If raw_text is still empty, provide clean fallback with filename
-    if not result or not result.get("raw_text"):
+    # If raw_text is still empty, output honest parse failure (NEVER fabricate synthetic document data)
+    if not result or not result.get("raw_text") or len(result.get("sections", [])) == 0:
         title = os.path.splitext(os.path.basename(file_path))[0]
-        fallback_text = f"{title}\n1. 사업 개요 및 목적\n  가. 본 과업은 공공행정 업무의 효율적 추진 및 디지털 전환을 위하여 작성되었습니다.\n  나. 수요기관: 서울특별시 강남구\n  다. 사업예산: 550,000,000원\n  라. 사업기간: 계약체결일로부터 8개월"
         result = {
+            "parse_status": "FAILED",
+            "parse_quality": "NONE",
+            "error": f"문서 파싱 실패: 파일({os.path.basename(file_path)})에서 텍스트 또는 단락을 추출하지 못했습니다. 암호화된 문서이거나 지원되지 않는 서식일 수 있습니다.",
+            "raw_text": "",
+            "sections": [],
             "metadata": {
                 "title": title,
-                "author": "공공행정기안자",
+                "author": "",
                 "created_date": "",
                 "modified_date": "",
-                "hwp_version": "5.0.3.0",
-                "is_compressed": True,
+                "hwp_version": "",
+                "is_compressed": False,
                 "is_encrypted": False,
-                "page_count": 2,
-                "paragraph_count": 5,
-                "table_count": 1,
-                "character_count": len(fallback_text),
-                "word_count": len(fallback_text.split())
-            },
-            "sections": [{
-                "index": 0,
-                "page_count": 2,
-                "paragraphs": [{
-                    "id": "para_1",
-                    "section_index": 0,
-                    "paragraph_index": 0,
-                    "text": title,
-                    "style_name": "제목",
-                    "align": "CENTER",
-                    "text_runs": [{"text": title, "font_family": "한컴바탕", "font_size": 16, "is_bold": True, "is_italic": False, "color": "#111827"}]
-                }],
-                "tables": []
-            }],
-            "raw_text": fallback_text,
-            "version": "hwp-fallback-1.0"
+                "page_count": 0,
+                "paragraph_count": 0,
+                "table_count": 0,
+                "character_count": 0,
+                "word_count": 0
+            }
         }
 
     print(json.dumps(result, ensure_ascii=False))

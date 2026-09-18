@@ -2,13 +2,14 @@ import { SeverityLevel } from './common';
 
 export type RuleCategoryType =
   | 'RULE_FIX'
+  | 'CONDITIONAL'
+  | 'FAIRNESS'
+  | 'AI_REVIEW'
   | 'RULE_WARN'
   | 'RULE_RECOMMEND'
-  | 'RULE_INFO'
-  | 'FAIRNESS'
-  | 'AI_REVIEW';
+  | 'RULE_INFO';
 
-export type DecisionStatus = 'PENDING' | 'ACCEPTED' | 'REJECTED';
+export type DecisionStatus = 'PENDING' | 'ACCEPTED' | 'PARTIALLY_ACCEPTED' | 'REJECTED';
 
 
 export interface NativeLocator {
@@ -17,6 +18,8 @@ export interface NativeLocator {
   table_index?: number;
   row?: number;
   col?: number;
+  row_index?: number;
+  cell_index?: number;
 }
 
 export interface SourceRef {
@@ -89,7 +92,15 @@ export const CATEGORY_META: Record<
     textClass: 'text-rose-700',
     borderClass: 'border-rose-200',
     iconBg: 'bg-rose-50',
-    description: '필수 법령 위반, 독소조항 등 즉시 조치 필요',
+    description: '강행 법령 위배 또는 필수 법적 요건 불일치로 즉시 정비 필요',
+  },
+  CONDITIONAL: {
+    label: '조건부 검토',
+    badgeClass: 'bg-amber-100 text-amber-800 border-amber-200',
+    textClass: 'text-amber-700',
+    borderClass: 'border-amber-200',
+    iconBg: 'bg-amber-50',
+    description: '특정 조건 충족 여부 또는 당사자 간 상호 합의에 따른 조건부 확인 필요',
   },
   RULE_WARN: {
     label: '확인 필요',
@@ -113,7 +124,7 @@ export const CATEGORY_META: Record<
     textClass: 'text-purple-700',
     borderClass: 'border-purple-200',
     iconBg: 'bg-purple-50',
-    description: '불공정 거래 및 과도한 의무 부과 조항 (상호협의 권고)',
+    description: '과도한 부담 전가 방지 및 상호 대등한 계약 이행을 위한 협의 권고',
   },
   AI_REVIEW: {
     label: 'AI 추가검토',

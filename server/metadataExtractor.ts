@@ -151,28 +151,40 @@ ${combinedText}
       }
 
       if (parsed && typeof parsed === 'object') {
+        const rawBudget = typeof parsed.budget_amount === 'number' && parsed.budget_amount > 0 ? parsed.budget_amount : null;
+        const rawEstimated = typeof parsed.estimated_price === 'number' && parsed.estimated_price > 0 ? parsed.estimated_price : null;
+        const derivedEst = !rawEstimated && rawBudget ? Math.round(rawBudget / 1.1) : null;
+        const derivationNote = derivedEst ? '총사업예산 기반 추산 (부가가치세 10% 제외 공식: 예산 / 1.1)' : null;
+
+        const validatedClientType = validateClientType(parsed.client_type, parsed.client_name);
+        const validatedGovLaw = validateGoverningLaw(parsed.governing_law, validatedClientType);
+        const validatedProcMethod = validateProcurementMethod(parsed.procurement_method);
+
         const extracted: ExtractedMetadata = {
           project_id: projectId,
           project_name: parsed.project_name || docTitle,
           client_name: parsed.client_name || null,
-          client_type: validateClientType(parsed.client_type, parsed.client_name),
-          governing_law: validateGoverningLaw(parsed.governing_law, parsed.client_type),
-          procurement_method: validateProcurementMethod(parsed.procurement_method),
-          budget_amount: typeof parsed.budget_amount === 'number' && parsed.budget_amount > 0 ? parsed.budget_amount : null,
-          estimated_price: typeof parsed.estimated_price === 'number' && parsed.estimated_price > 0 ? parsed.estimated_price : null,
+          client_type: validatedClientType,
+          governing_law: validatedGovLaw,
+          procurement_method: validatedProcMethod,
+          budget_amount: rawBudget,
+          estimated_price: rawEstimated,
+          derived_estimated_price: derivedEst,
+          derivation_note: derivationNote,
+          requires_user_confirmation: true,
           project_period: parsed.project_period || null,
           confidence_scores: {
             project_name: parsed.confidence_scores?.project_name ?? 0.98,
-            client_name: parsed.confidence_scores?.client_name ?? 0.98,
-            client_type: parsed.confidence_scores?.client_type ?? 0.95,
-            governing_law: parsed.confidence_scores?.governing_law ?? 0.95,
-            procurement_method: parsed.confidence_scores?.procurement_method ?? 0.99,
-            budget_amount: parsed.confidence_scores?.budget_amount ?? 0.95,
-            estimated_price: parsed.confidence_scores?.estimated_price ?? 0.90,
+            client_name: parsed.confidence_scores?.client_name ?? (parsed.client_name ? 0.95 : 0.3),
+            client_type: validatedClientType === 'UNKNOWN' ? 0.2 : 0.92,
+            governing_law: validatedGovLaw === 'UNKNOWN' ? 0.2 : 0.92,
+            procurement_method: validatedProcMethod === 'UNKNOWN' ? 0.2 : 0.95,
+            budget_amount: rawBudget ? 0.95 : 0.2,
+            estimated_price: rawEstimated ? 0.90 : 0.2,
           },
           source_references: parsed.source_references || {
-            procurement_method: '사업자 선정 방식 절',
-            budget_amount: '사업예산 규격',
+            procurement_method: validatedProcMethod !== 'UNKNOWN' ? '사업자 선정 방식 절' : '미기재',
+            budget_amount: rawBudget ? '사업예산 항목' : '미기재',
           },
           extracted_at: new Date().toISOString(),
           status: 'COMPLETED',
@@ -268,9 +280,9 @@ export function extractMetadataRuleBasedFallback(
     }
   }
 
-  // 3) 기관유형 및 적용법령
-  let clientType: ClientType = 'LOCAL_GOVERNMENT';
-  let governingLaw: GoverningLaw = 'LOCAL_CONTRACT_ACT';
+  // 3) 기관유형 및 적용법령 (추정 대신 미확인 시 UNKNOWN 반환)
+  let clientType: ClientType = 'UNKNOWN';
+  let governingLaw: GoverningLaw = 'UNKNOWN';
 
   if (clientName) {
     if (/부|처|청|위원회/.test(clientName) && !/구청|시청|군청/.test(clientName)) {
@@ -282,16 +294,18 @@ export function extractMetadataRuleBasedFallback(
     } else if (/교육청|학교/.test(clientName)) {
       clientType = 'EDUCATIONAL';
       governingLaw = 'LOCAL_CONTRACT_ACT';
-    } else {
+    } else if (/구청|시청|군청|도청|광역시|특별시|자치시|자치도/.test(clientName)) {
       clientType = 'LOCAL_GOVERNMENT';
       governingLaw = 'LOCAL_CONTRACT_ACT';
+    } else {
+      clientType = 'OTHER';
+      governingLaw = 'OTHER';
     }
   }
 
-  // 4) 계약방법 (Procurement Method) - 정밀 문맥 분별
-  // 먼저 "사업자 선정 방식", "입찰 방식", "낙찰자 결정 방식", "계약방법" 섹션을 집중 탐색
-  let procurementMethod: ProcurementMethod = 'NEGOTIATION';
-  let confidenceMethod = 0.95;
+  // 4) 계약방법 (Procurement Method) - 정밀 문맥 분별 (미발견 시 UNKNOWN)
+  let procurementMethod: ProcurementMethod = 'UNKNOWN';
+  let confidenceMethod = 0.2;
 
   const procurementSectionMatch = allLines.match(
     /(?:사업자\s*선정\s*방식|입찰\s*방식|계약\s*방법|낙찰자\s*결정\s*방식|입찰\s*및\s*낙찰자)[\s\S]{1,600}/
@@ -319,9 +333,10 @@ export function extractMetadataRuleBasedFallback(
     confidenceMethod = 0.93;
   }
 
-  // 5) 사업예산 및 추정가격 (문서에 실제로 존재하는 금액만 추출, 가짜 550,000,000원 생성 금지)
+  // 5) 사업예산 및 추정가격 (문서에 실제로 존재하는 금액만 추출)
+  // 사실 추출과 파생 계산을 명확히 구분
   let budgetAmount: number | null = null;
-  let estimatedPrice: number | null = null;
+  let explicitEstimatedPrice: number | null = null;
 
   // 억원 패턴 (예: "15억원", "14억 5,000만원", "금 8억 8천만원")
   const eokMatch = allLines.match(/(?:사\s*업\s*예\s*산|총\s*예\s*산|예\s*산\s*액|소\s*요\s*예\s*산|사\s*업\s*비|계\s*약\s*금\s*액)\s*[:：]?\s*(?:금\s*)?([0-9]+)\s*억\s*([0-9,]+)?\s*만?\s*원?/);
@@ -333,7 +348,6 @@ export function extractMetadataRuleBasedFallback(
       man = parseInt(manStr, 10) * 10000;
     }
     budgetAmount = eok + man;
-    estimatedPrice = Math.round(budgetAmount / 1.1);
   } else {
     // 콤마 숫자 패턴 (예: "1,450,000,000원", "880,000,000원")
     const numMatch = allLines.match(/(?:사\s*업\s*예\s*산|총\s*예\s*산|예\s*산\s*액|소\s*요\s*예\s*산|사\s*업\s*비|추\s*정\s*금\s*액|배\s*정\s*예\s*산)\s*[:：]?\s*(?:일금\s*)?([0-9,]{4,15})\s*(?:원)?/);
@@ -341,21 +355,26 @@ export function extractMetadataRuleBasedFallback(
       const parsed = parseInt(numMatch[1].replace(/,/g, ''), 10);
       if (!isNaN(parsed) && parsed >= 1000000) {
         budgetAmount = parsed;
-        estimatedPrice = Math.round(parsed / 1.1);
       }
     }
   }
 
-  // 별도 추정가격 표기 검사
+  // 별도 추정가격 표기 검사 (원문에 명시된 경우에만 추출)
   const estMatch = allLines.match(/(?:추\s*정\s*가\s*격|추\s*정\s*가)\s*[:：]?\s*(?:일금\s*)?([0-9,]{4,15})\s*(?:원)?/);
   if (estMatch) {
     const parsedEst = parseInt(estMatch[1].replace(/,/g, ''), 10);
     if (!isNaN(parsedEst) && parsedEst > 0) {
-      estimatedPrice = parsedEst;
+      explicitEstimatedPrice = parsedEst;
     }
   }
 
-  // 6) 사업기간 (문서에 실제로 존재하는 문구만 추출, 가짜 8개월 기본값 금지)
+  // 추정가격 파생 계산 (총예산이 있고 명시적 추정가격이 없는 경우 부가세 10% 제외 계산값 분리)
+  const derivedEstimatedPrice = !explicitEstimatedPrice && budgetAmount ? Math.round(budgetAmount / 1.1) : null;
+  const derivationNote = derivedEstimatedPrice
+    ? '총사업예산 기반 자동 산출 (부가가치세 10% 제외 공식: 예산 / 1.1)'
+    : null;
+
+  // 6) 사업기간 (문서에 실제로 존재하는 문구만 추출, 가짜 기본값 생성 금지)
   let projectPeriod: string | null = null;
   const periodMatch = allLines.match(/(?:사\s*업\s*기\s*간|과\s*업\s*기\s*간|용\s*역\s*기\s*간|계\s*약\s*기\s*간)\s*[:：]?\s*([^\n\r]{3,60})/);
   if (periodMatch) {
@@ -375,19 +394,22 @@ export function extractMetadataRuleBasedFallback(
     governing_law: governingLaw,
     procurement_method: procurementMethod,
     budget_amount: budgetAmount,
-    estimated_price: estimatedPrice,
+    estimated_price: explicitEstimatedPrice,
+    derived_estimated_price: derivedEstimatedPrice,
+    derivation_note: derivationNote,
+    requires_user_confirmation: true,
     project_period: projectPeriod,
     confidence_scores: {
-      project_name: projectName ? 0.95 : 0.5,
-      client_name: clientName ? 0.94 : 0.5,
-      client_type: 0.92,
-      governing_law: 0.92,
+      project_name: projectName ? 0.95 : 0.4,
+      client_name: clientName ? 0.94 : 0.2,
+      client_type: clientType === 'UNKNOWN' ? 0.2 : 0.90,
+      governing_law: governingLaw === 'UNKNOWN' ? 0.2 : 0.90,
       procurement_method: confidenceMethod,
-      budget_amount: budgetAmount ? 0.95 : 0.4,
-      estimated_price: estimatedPrice ? 0.90 : 0.4,
+      budget_amount: budgetAmount ? 0.95 : 0.2,
+      estimated_price: explicitEstimatedPrice ? 0.90 : 0.2,
     },
     source_references: {
-      procurement_method: '사업자 선정 방식 탐색',
+      procurement_method: procurementMethod !== 'UNKNOWN' ? '사업자 선정 방식 탐색' : '미기재',
       budget_amount: budgetAmount ? '문서 본문 예산 항목' : '미기재',
     },
     extracted_at: new Date().toISOString(),
@@ -396,7 +418,7 @@ export function extractMetadataRuleBasedFallback(
 }
 
 function validateClientType(raw: string | undefined, clientName?: string | null): ClientType {
-  const valid: ClientType[] = ['LOCAL_GOVERNMENT', 'CENTRAL_GOVERNMENT', 'PUBLIC_INSTITUTION', 'EDUCATIONAL', 'OTHER'];
+  const valid: ClientType[] = ['LOCAL_GOVERNMENT', 'CENTRAL_GOVERNMENT', 'PUBLIC_INSTITUTION', 'EDUCATIONAL', 'OTHER', 'UNKNOWN'];
   if (raw && valid.includes(raw as ClientType)) {
     return raw as ClientType;
   }
@@ -404,24 +426,26 @@ function validateClientType(raw: string | undefined, clientName?: string | null)
     if (/부|처|청|위원회/.test(clientName) && !/구청|시청|군청/.test(clientName)) return 'CENTRAL_GOVERNMENT';
     if (/공사|공단|진흥원|연구원|재단|센터/.test(clientName)) return 'PUBLIC_INSTITUTION';
     if (/교육청|학교/.test(clientName)) return 'EDUCATIONAL';
+    if (/구청|시청|군청|도청/.test(clientName)) return 'LOCAL_GOVERNMENT';
   }
-  return 'LOCAL_GOVERNMENT';
+  return 'UNKNOWN';
 }
 
 function validateGoverningLaw(raw: string | undefined, clientType?: ClientType): GoverningLaw {
-  const valid: GoverningLaw[] = ['LOCAL_CONTRACT_ACT', 'STATE_CONTRACT_ACT', 'PUBLIC_ENTERPRISE_RULE', 'OTHER'];
+  const valid: GoverningLaw[] = ['LOCAL_CONTRACT_ACT', 'STATE_CONTRACT_ACT', 'PUBLIC_ENTERPRISE_RULE', 'OTHER', 'UNKNOWN'];
   if (raw && valid.includes(raw as GoverningLaw)) {
     return raw as GoverningLaw;
   }
   if (clientType === 'CENTRAL_GOVERNMENT') return 'STATE_CONTRACT_ACT';
   if (clientType === 'PUBLIC_INSTITUTION') return 'PUBLIC_ENTERPRISE_RULE';
-  return 'LOCAL_CONTRACT_ACT';
+  if (clientType === 'LOCAL_GOVERNMENT' || clientType === 'EDUCATIONAL') return 'LOCAL_CONTRACT_ACT';
+  return 'UNKNOWN';
 }
 
 function validateProcurementMethod(raw: string | undefined): ProcurementMethod {
-  const valid: ProcurementMethod[] = ['NEGOTIATION', 'RESTRICTED_COMPETITIVE', 'OPEN_COMPETITIVE', 'PRIVATE_CONTRACT'];
+  const valid: ProcurementMethod[] = ['NEGOTIATION', 'RESTRICTED_COMPETITIVE', 'OPEN_COMPETITIVE', 'PRIVATE_CONTRACT', 'UNKNOWN'];
   if (raw && valid.includes(raw as ProcurementMethod)) {
     return raw as ProcurementMethod;
   }
-  return 'NEGOTIATION';
+  return 'UNKNOWN';
 }

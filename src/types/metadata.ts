@@ -3,19 +3,22 @@ export type ClientType =
   | 'CENTRAL_GOVERNMENT'
   | 'PUBLIC_INSTITUTION'
   | 'EDUCATIONAL'
-  | 'OTHER';
+  | 'OTHER'
+  | 'UNKNOWN';
 
 export type GoverningLaw =
   | 'LOCAL_CONTRACT_ACT'
   | 'STATE_CONTRACT_ACT'
   | 'PUBLIC_ENTERPRISE_RULE'
-  | 'OTHER';
+  | 'OTHER'
+  | 'UNKNOWN';
 
 export type ProcurementMethod =
   | 'NEGOTIATION'
   | 'RESTRICTED_COMPETITIVE'
   | 'OPEN_COMPETITIVE'
-  | 'PRIVATE_CONTRACT';
+  | 'PRIVATE_CONTRACT'
+  | 'UNKNOWN';
 
 export interface ExtractedMetadata {
   project_id: string;
@@ -29,6 +32,9 @@ export interface ExtractedMetadata {
   is_ai_powered?: boolean;
   budget_amount?: number | null;
   estimated_price?: number | null;
+  derived_estimated_price?: number | null;
+  derivation_note?: string | null;
+  requires_user_confirmation?: boolean;
   project_period?: string | null;
   confidence_scores: Record<string, number>;
   source_references: Record<string, string>;
@@ -79,6 +85,7 @@ export const CLIENT_TYPE_LABELS: Record<ClientType, { label: string; desc: strin
   PUBLIC_INSTITUTION: { label: '공공기관 / 공기업', desc: '공공기관운영법 대상 공기업 및 준정부기관' },
   EDUCATIONAL: { label: '교육청 / 국공립학교', desc: '시·도 교육청 및 산하 교육지원청, 국공립학교' },
   OTHER: { label: '기타 공공단체', desc: '기타 특별법인 및 출연연구기관' },
+  UNKNOWN: { label: '미지정 / 확인 필요', desc: '문서에서 명확히 확인되지 않음 (담당자 확정 필요)' },
 };
 
 export const GOVERNING_LAW_LABELS: Record<GoverningLaw, { label: string; short: string }> = {
@@ -86,6 +93,7 @@ export const GOVERNING_LAW_LABELS: Record<GoverningLaw, { label: string; short: 
   STATE_CONTRACT_ACT: { label: '국가를 당사자로 하는 계약에 관한 법률 (국가계약법)', short: '국가계약법' },
   PUBLIC_ENTERPRISE_RULE: { label: '공기업·준정부기관 계약사무규칙', short: '공기업계약규칙' },
   OTHER: { label: '기타 관계 법령', short: '기타' },
+  UNKNOWN: { label: '미지정 / 법령 확인 필요', short: '미지정' },
 };
 
 export const PROCUREMENT_METHOD_LABELS: Record<ProcurementMethod, { label: string; desc: string }> = {
@@ -93,4 +101,5 @@ export const PROCUREMENT_METHOD_LABELS: Record<ProcurementMethod, { label: strin
   RESTRICTED_COMPETITIVE: { label: '제한경쟁입찰', desc: '지역, 실적, 자격요건 등을 제한하는 경쟁' },
   OPEN_COMPETITIVE: { label: '일반경쟁입찰', desc: '모든 자격보유자의 공개 입찰 참가 허용' },
   PRIVATE_CONTRACT: { label: '수의계약', desc: '소액 또는 특정 사유에 의한 특정업체 직접 계약' },
+  UNKNOWN: { label: '미지정 / 확인 필요', desc: '문서상 계약방식 미확인 (담당자 확인 필요)' },
 };

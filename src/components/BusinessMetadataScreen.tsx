@@ -59,13 +59,13 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
     initialAuthoritative?.client_name || initialExtracted?.client_name || ''
   );
   const [clientType, setClientType] = useState<ClientType>(
-    initialAuthoritative?.client_type || initialExtracted?.client_type || 'LOCAL_GOVERNMENT'
+    initialAuthoritative?.client_type || initialExtracted?.client_type || 'UNKNOWN'
   );
   const [governingLaw, setGoverningLaw] = useState<GoverningLaw>(
-    initialAuthoritative?.governing_law || initialExtracted?.governing_law || 'LOCAL_CONTRACT_ACT'
+    initialAuthoritative?.governing_law || initialExtracted?.governing_law || 'UNKNOWN'
   );
   const [procurementMethod, setProcurementMethod] = useState<ProcurementMethod>(
-    initialAuthoritative?.procurement_method || initialExtracted?.procurement_method || 'NEGOTIATION'
+    initialAuthoritative?.procurement_method || initialExtracted?.procurement_method || 'UNKNOWN'
   );
   const [budgetAmount, setBudgetAmount] = useState<number | string>(
     initialAuthoritative?.budget_amount && initialAuthoritative.budget_amount > 0
@@ -130,9 +130,9 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
   const populateForm = (data: AuthoritativeMetadata) => {
     setProjectName(data.project_name || projectNameDefault || '');
     setClientName(data.client_name || '');
-    setClientType(data.client_type || 'LOCAL_GOVERNMENT');
-    setGoverningLaw(data.governing_law || 'LOCAL_CONTRACT_ACT');
-    setProcurementMethod(data.procurement_method || 'NEGOTIATION');
+    setClientType(data.client_type || 'UNKNOWN');
+    setGoverningLaw(data.governing_law || 'UNKNOWN');
+    setProcurementMethod(data.procurement_method || 'UNKNOWN');
     setBudgetAmount(data.budget_amount && data.budget_amount > 0 ? data.budget_amount : '');
     setEstimatedPrice(data.estimated_price && data.estimated_price > 0 ? data.estimated_price : '');
     setProjectPeriod(data.project_period || '');
@@ -142,9 +142,9 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
   const populateFormFromExtracted = (data: ExtractedMetadata) => {
     setProjectName(data.project_name || projectNameDefault || '');
     setClientName(data.client_name || '');
-    setClientType(data.client_type || 'LOCAL_GOVERNMENT');
-    setGoverningLaw(data.governing_law || 'LOCAL_CONTRACT_ACT');
-    setProcurementMethod(data.procurement_method || 'NEGOTIATION');
+    setClientType(data.client_type || 'UNKNOWN');
+    setGoverningLaw(data.governing_law || 'UNKNOWN');
+    setProcurementMethod(data.procurement_method || 'UNKNOWN');
     setBudgetAmount(data.budget_amount && data.budget_amount > 0 ? data.budget_amount : '');
     setEstimatedPrice(data.estimated_price && data.estimated_price > 0 ? data.estimated_price : '');
     setProjectPeriod(data.project_period || '');
@@ -458,6 +458,7 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
                 onChange={(e) => handleAutoRecommendLaw(e.target.value as ClientType)}
                 className="w-full px-3.5 py-2 rounded-lg border border-slate-300 text-sm font-medium text-slate-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white transition"
               >
+                <option value="UNKNOWN">미지정 / 확인 필요 (선택 필요)</option>
                 <option value="LOCAL_GOVERNMENT">지방자치단체 (시·도, 구청, 시청)</option>
                 <option value="CENTRAL_GOVERNMENT">국가기관 / 중앙행정기관 (부·처·청)</option>
                 <option value="PUBLIC_INSTITUTION">공공기관 / 공기업 / 준정부기관</option>
@@ -482,8 +483,8 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
               </span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-              {(['LOCAL_CONTRACT_ACT', 'STATE_CONTRACT_ACT'] as GoverningLaw[]).map((law) => {
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+              {(['LOCAL_CONTRACT_ACT', 'STATE_CONTRACT_ACT', 'UNKNOWN'] as GoverningLaw[]).map((law) => {
                 const info = GOVERNING_LAW_LABELS[law];
                 const isSelected = governingLaw === law;
                 return (
@@ -534,8 +535,8 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
                 </span>
               )}
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {(['NEGOTIATION', 'RESTRICTED_COMPETITIVE', 'OPEN_COMPETITIVE', 'PRIVATE_CONTRACT'] as ProcurementMethod[]).map(
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+              {(['NEGOTIATION', 'RESTRICTED_COMPETITIVE', 'OPEN_COMPETITIVE', 'PRIVATE_CONTRACT', 'UNKNOWN'] as ProcurementMethod[]).map(
                 (method) => {
                   const info = PROCUREMENT_METHOD_LABELS[method];
                   const isSelected = procurementMethod === method;
@@ -594,7 +595,9 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
                     } else {
                       const numVal = Number(rawVal);
                       setBudgetAmount(numVal);
-                      setEstimatedPrice(Math.round(numVal / 1.1));
+                      if (estimatedPrice === '') {
+                        setEstimatedPrice(Math.round(numVal / 1.1));
+                      }
                     }
                   }}
                   className="w-full pl-3.5 pr-8 py-2 rounded-lg border border-slate-300 text-sm font-mono font-medium text-slate-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 placeholder:text-slate-400 placeholder:font-sans placeholder:text-xs"
@@ -641,6 +644,11 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
                   <span className="text-slate-400 font-sans text-[11px]">미기재</span>
                 )}
               </p>
+              {extracted?.derivation_note && (
+                <p className="mt-1 text-[11px] text-indigo-600 bg-indigo-50/70 px-2 py-0.5 rounded border border-indigo-100">
+                  💡 {extracted.derivation_note}
+                </p>
+              )}
             </div>
           </div>
 

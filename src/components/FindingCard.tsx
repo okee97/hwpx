@@ -72,6 +72,7 @@ export const FindingCard: React.FC<FindingCardProps> = ({
   };
 
   const isAccepted = finding.decision === 'ACCEPTED';
+  const isPartiallyAccepted = finding.decision === 'PARTIALLY_ACCEPTED';
   const isRejected = finding.decision === 'REJECTED';
   const isPending = finding.decision === 'PENDING';
 
@@ -139,6 +140,12 @@ export const FindingCard: React.FC<FindingCardProps> = ({
               <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 border border-emerald-300">
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
                 수용 완료
+              </span>
+            )}
+            {isPartiallyAccepted && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-800 border border-blue-300">
+                <CheckCircle2 className="w-3.5 h-3.5 text-blue-600" />
+                부분 수용
               </span>
             )}
             {isRejected && (
@@ -317,7 +324,7 @@ export const FindingCard: React.FC<FindingCardProps> = ({
                 id={`btn-accept-${finding.finding_id}`}
                 onClick={() => handleDecision('ACCEPTED')}
                 disabled={isUpdating}
-                className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold transition-all shadow-xs ${
+                className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold transition-all shadow-xs ${
                   isAccepted
                     ? 'bg-emerald-600 text-white shadow ring-2 ring-emerald-500/50'
                     : 'bg-emerald-50 hover:bg-emerald-600 text-emerald-800 hover:text-white border border-emerald-300 hover:border-emerald-600'
@@ -328,7 +335,26 @@ export const FindingCard: React.FC<FindingCardProps> = ({
                 ) : (
                   <CheckCircle2 className="w-3.5 h-3.5" />
                 )}
-                <span>수용 (권고 반영)</span>
+                <span>수용</span>
+              </button>
+
+              {/* [부분 수용] 버튼 */}
+              <button
+                id={`btn-partially-accept-${finding.finding_id}`}
+                onClick={() => handleDecision('PARTIALLY_ACCEPTED')}
+                disabled={isUpdating}
+                className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold transition-all shadow-xs ${
+                  isPartiallyAccepted
+                    ? 'bg-blue-600 text-white shadow ring-2 ring-blue-500/50'
+                    : 'bg-blue-50 hover:bg-blue-600 text-blue-800 hover:text-white border border-blue-300 hover:border-blue-600'
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                {isUpdating ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                )}
+                <span>부분 수용</span>
               </button>
 
               {/* [불수용] 버튼 */}
@@ -336,7 +362,7 @@ export const FindingCard: React.FC<FindingCardProps> = ({
                 id={`btn-reject-${finding.finding_id}`}
                 onClick={() => handleDecision('REJECTED')}
                 disabled={isUpdating}
-                className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold transition-all shadow-xs ${
+                className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold transition-all shadow-xs ${
                   isRejected
                     ? 'bg-slate-700 text-white shadow ring-2 ring-slate-400/50'
                     : 'bg-slate-100 hover:bg-slate-700 text-slate-700 hover:text-white border border-slate-300 hover:border-slate-700'
@@ -347,7 +373,7 @@ export const FindingCard: React.FC<FindingCardProps> = ({
                 ) : (
                   <XCircle className="w-3.5 h-3.5" />
                 )}
-                <span>불수용 (원문 유지)</span>
+                <span>불수용</span>
               </button>
             </div>
           </div>

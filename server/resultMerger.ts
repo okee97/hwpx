@@ -6,9 +6,16 @@ export interface MergerValidationResult {
   filteredByValidatorCount: number;
 }
 
+function normalizeForComparison(t: string): string {
+  return (t || '')
+    .replace(/[\s\u00A0\u200B\r\n\t]+/g, ' ')
+    .trim();
+}
+
 /**
  * Result Merger & Source Validator
- * 1. Source Validator: AI 인용문이 실제 DocumentBlock에 존재하는지 검증 (허위 인용 필터링)
+ * 1. Source Validator: AI 인용문이 실제 DocumentBlock에 존재하는지 엄격 검증 (허위 인용 필터링)
+ *    - 원칙: block_id 존재 AND original_text가 실제 block의 substring일 것을 기본 조건으로 설정
  * 2. Result Merger: Rule Engine, Fairness, General Agent 간 동일 블록/동일 지적사항 중복 병합
  */
 export function mergeAndValidateFindings(
@@ -21,23 +28,28 @@ export function mergeAndValidateFindings(
   let filteredByValidatorCount = 0;
   const validatedFindings: Finding[] = [];
 
-  // 1. Source Validator
+  // 1. Source Validator (원문 검증 및 허위 인용/환각 엄격 필터링)
   for (const finding of rawFindings) {
     let isValid = false;
     const validatedRefs: SourceRef[] = [];
+    const quote = normalizeForComparison(finding.original_text || '');
 
     // Check existing source_refs
     for (const ref of finding.source_refs) {
       const realBlock = blockMap.get(ref.block_id);
       if (realBlock) {
-        // Verify text overlap (prevent fabricated hallucinated text)
-        const quote = finding.original_text || ref.text || '';
-        const realText = realBlock.text;
+        const realText = normalizeForComparison(realBlock.text);
 
-        const isSubstring = realText.includes(quote) || quote.includes(realText.slice(0, 20));
-        const hasKeywordMatch = finding.matched_keyword && realText.includes(finding.matched_keyword);
+        // 엄격한 substring 검증: 공백 정규화 후 실질적 일치 확인
+        const isSubstring = quote.length >= 4 && realText.includes(quote);
+        const isReverseSubstring = quote.length > 25 && quote.includes(realText);
+        const hasKeywordMatch =
+          Boolean(finding.matched_keyword &&
+          finding.matched_keyword.trim().length >= 3 &&
+          realText.includes(normalizeForComparison(finding.matched_keyword)) &&
+          (quote.length === 0 || realText.includes(quote.slice(0, 15))));
 
-        if (isSubstring || hasKeywordMatch || quote.length < 15) {
+        if (isSubstring || isReverseSubstring || hasKeywordMatch) {
           isValid = true;
           validatedRefs.push({
             block_id: realBlock.block_id,
@@ -48,13 +60,12 @@ export function mergeAndValidateFindings(
       }
     }
 
-    // If source_ref block_id was fabricated or unmatched, attempt to recover by searching documentBlocks
-    if (!isValid && finding.original_text) {
-      const candidate = documentBlocks.find(
-        (b) =>
-          b.text.includes(finding.original_text) ||
-          (finding.matched_keyword && b.text.includes(finding.matched_keyword))
-      );
+    // If source_ref block_id was fabricated or unmatched, attempt strict recovery by searching documentBlocks
+    if (!isValid && quote.length >= 8) {
+      const candidate = documentBlocks.find((b) => {
+        const candidateNorm = normalizeForComparison(b.text);
+        return candidateNorm.includes(quote);
+      });
 
       if (candidate) {
         isValid = true;

@@ -12,7 +12,7 @@ export type DocumentStatus =
 
 export type DocumentFormat = 'hwp' | 'hwpx';
 
-export type SeverityLevel = 'HIGH' | 'CRITICAL' | 'WARNING' | 'INFO';
+export type SeverityLevel = 'HIGH' | 'MEDIUM' | 'LOW' | 'CRITICAL' | 'WARNING' | 'INFO';
 
 export type TextAlignment = 'LEFT' | 'CENTER' | 'RIGHT' | 'JUSTIFY';
 

@@ -6,6 +6,24 @@ import multer from 'multer';
 import { createServer as createViteServer } from 'vite';
 import { orchestrateReviewPipeline } from './server/reviewOrchestrator';
 import { extractMetadataWithGemini, extractMetadataRuleBasedFallback } from './server/metadataExtractor';
+import {
+  Finding,
+  DocumentBlock,
+  SourceRef,
+  NativeLocator,
+  RuleCategoryType,
+  DecisionStatus,
+} from './src/types/finding';
+import {
+  ExtractedMetadata,
+  AuthoritativeMetadata,
+  MetadataSnapshot,
+  ClientType,
+  GoverningLaw,
+  ProcurementMethod,
+} from './src/types/metadata';
+import { SeverityLevel } from './src/types/common';
+import { executeRhwpParse, parseHwpWithPython } from './server/rhwpAdapter';
 
 const app = express();
 
@@ -88,7 +106,7 @@ try {
 }
 
 // API Routes
-app.get('/api/v1/health', (req, res) => {
+app.get(['/api/health', '/api/v1/health'], (req, res) => {
   const rhwpCliPath = process.env.RHWP_CLI_PATH || '/usr/local/bin/rhwp';
   const cliExists = fs.existsSync(rhwpCliPath);
   res.json({
@@ -108,58 +126,8 @@ app.get('/api/v1/health', (req, res) => {
 });
 
 // ==========================================
-// Vertical Slice 1 & 2: Models, Types & Stores
+// Vertical Slice 1 & 2: Stores & Caches
 // ==========================================
-interface NativeLocator {
-  section_index: number;
-  paragraph_index?: number;
-  table_index?: number;
-  row?: number;
-  col?: number;
-  row_index?: number;
-  cell_index?: number;
-}
-
-interface SourceRef {
-  block_id: string;
-  native_locator: NativeLocator;
-  text?: string;
-}
-
-interface DocumentBlock {
-  block_id: string;
-  block_type: string;
-  native_locator: NativeLocator;
-  text: string;
-  style_name?: string;
-}
-
-interface Finding {
-  finding_id: string;
-  project_id: string;
-  rule_id: string;
-  rule_name: string;
-  category:
-    | 'RULE_FIX'
-    | 'RULE_WARN'
-    | 'RULE_RECOMMEND'
-    | 'RULE_INFO'
-    | 'FAIRNESS'
-    | 'AI_REVIEW';
-  severity: 'HIGH' | 'CRITICAL' | 'WARNING' | 'INFO';
-
-  title: string;
-  original_text: string;
-  matched_keyword: string;
-  source_refs: SourceRef[];
-  basis: string;
-  recommendation: string;
-  decision: 'PENDING' | 'ACCEPTED' | 'REJECTED';
-  decision_reason?: string | null;
-  decided_at?: string | null;
-  created_at: string;
-}
-
 // In-memory store backed by /tmp/findings_db.json
 const findingsStore: Map<string, Map<string, Finding>> = new Map();
 const FINDINGS_FILE = '/tmp/findings_db.json';
@@ -197,65 +165,6 @@ const saveFindingsToDisk = () => {
 };
 
 loadFindingsFromDisk();
-
-type ClientType =
-  | 'LOCAL_GOVERNMENT'
-  | 'CENTRAL_GOVERNMENT'
-  | 'PUBLIC_INSTITUTION'
-  | 'EDUCATIONAL'
-  | 'OTHER';
-
-type GoverningLaw =
-  | 'LOCAL_CONTRACT_ACT'
-  | 'STATE_CONTRACT_ACT'
-  | 'PUBLIC_ENTERPRISE_RULE'
-  | 'OTHER';
-
-type ProcurementMethod =
-  | 'NEGOTIATION'
-  | 'RESTRICTED_COMPETITIVE'
-  | 'OPEN_COMPETITIVE'
-  | 'PRIVATE_CONTRACT';
-
-interface ExtractedMetadata {
-  project_id: string;
-  project_name?: string | null;
-  client_name?: string | null;
-  client_type: ClientType;
-  governing_law: GoverningLaw;
-  procurement_method: ProcurementMethod;
-  budget_amount?: number | null;
-  estimated_price?: number | null;
-  project_period?: string | null;
-  confidence_scores: Record<string, number>;
-  source_references: Record<string, string>;
-  extracted_at: string;
-  status: string;
-}
-
-interface AuthoritativeMetadata {
-  project_id: string;
-  version: number;
-  project_name: string;
-  client_name: string;
-  client_type: ClientType;
-  governing_law: GoverningLaw;
-  procurement_method: ProcurementMethod;
-  budget_amount?: number | null;
-  estimated_price?: number | null;
-  project_period?: string | null;
-  confirmed_by?: string;
-  note?: string | null;
-  updated_at: string;
-}
-
-interface MetadataSnapshot {
-  snapshot_id: string;
-  project_id: string;
-  version: number;
-  data: AuthoritativeMetadata;
-  created_at: string;
-}
 
 // Stores backed by /tmp/metadata_db.json
 const METADATA_FILE = '/tmp/metadata_db.json';
@@ -389,42 +298,15 @@ async function extractMetadataLogic(
   const extracted = aiResult.extracted;
   extractedStore.set(projectId, extracted);
 
-  // Authoritative Metadata 생성 또는 초기화 (할루시네이션 가짜 숫자/문구 배제)
-  const initialAuth: AuthoritativeMetadata = {
-    project_id: projectId,
-    version: 1,
-    project_name: extracted.project_name || fileName?.replace(/\.[^.]+$/, '') || '',
-    client_name: extracted.client_name || '',
-    client_type: extracted.client_type,
-    governing_law: extracted.governing_law,
-    procurement_method: extracted.procurement_method,
-    budget_amount: extracted.budget_amount ?? null,
-    estimated_price: extracted.estimated_price ?? null,
-    project_period: extracted.project_period ?? null,
-    confirmed_by: aiResult.is_ai_powered ? 'gemini_ai_auto_extract' : 'system_fallback_extract',
-    note: aiResult.procurement_method_reason
-      ? `[AI 판정근거] ${aiResult.procurement_method_reason}`
-      : '한글 문서(HWP/HWPX) 자동 파싱 및 사업정보 AI 추출 완료 (사용자 확인 대기)',
-    updated_at: new Date().toISOString(),
-  };
-  authoritativeStore.set(projectId, initialAuth);
-
-  const snap: MetadataSnapshot = {
-    snapshot_id: `snap-${projectId}-v1`,
-    project_id: projectId,
-    version: 1,
-    data: initialAuth,
-    created_at: new Date().toISOString(),
-  };
-  snapshotStore.set(projectId, [snap]);
-
+  // AI 추출값은 ExtractedMetadata에만 저장하고,
+  // AuthoritativeMetadata는 사용자가 화면에서 확인 후 [확정]할 때 생성/갱신합니다.
   saveMetadataToDisk();
   return aiResult;
 }
 
 // Vertical Slice 1: Upload & parse via rhwp CLI & Python parser service
 app.post('/api/v1/documents/upload', (req, res) => {
-  upload.single('file')(req, res, (err: any) => {
+  upload.single('file')(req, res, async (err: any) => {
     if (err) {
       console.warn('[Multer Upload Warning]', err?.message || err);
       return res.status(400).json({
@@ -451,229 +333,100 @@ app.post('/api/v1/documents/upload', (req, res) => {
     const fileSize = file.size;
     const ext = path.extname(fileName).toLowerCase().replace('.', '');
     const docFormat = ext === 'hwpx' ? 'hwpx' : 'hwp';
-    const startTime = Date.now();
 
-    const rhwpCliPath = process.env.RHWP_CLI_PATH || '/usr/local/bin/rhwp';
-    const cliExists = fs.existsSync(rhwpCliPath);
-    const pythonScriptPath = path.join(process.cwd(), 'scripts', 'hwp_extractor.py');
+    // 1단계: rhwp CLI 공식 실행 (capabilities 기반 동적 명령 선택)
+    let parseResult = await executeRhwpParse(filePath);
 
-    const handleParsedData = async (parsedJson: any, executionInfo: any) => {
-      const documentId = `doc-${Date.now()}`;
-      const blocks = extractBlocksFromParsed(parsedJson);
-      const rawText = parsedJson.raw_text || '';
+    // 2단계: rhwp 실패 시 Python HWP/HWPX 추출기로 fallback
+    if (!parseResult.success) {
+      console.log(`[Upload] rhwp parsing failed or not installed (${parseResult.error}), falling back to python extractor`);
+      parseResult = await parseHwpWithPython(filePath);
+    }
 
-      // 파싱된 문서 원문 및 블록 캐시 저장 (후속 온디맨드 AI 재추출 및 상세 검토용)
-      parsedDocCache.set(documentId, {
-        blocks,
-        rawText,
-        fileName,
-        fileSize,
-        docFormat,
-        parsedJson,
-        executionInfo,
+    // 3단계: 파싱 실패 시 가짜 문서 날조 금지 및 정직한 실패 반환
+    if (!parseResult.success || !parseResult.data || parseResult.data.parse_status === 'FAILED') {
+      const errorMsg =
+        parseResult.error ||
+        parseResult.data?.error_details ||
+        '한글 문서(.hwp, .hwpx) 파싱에 실패했습니다. 암호화 문서이거나 비표준 파일 형식인지 확인하십시오.';
+      return res.status(422).json({
+        success: false,
+        error: errorMsg,
+        parse_status: 'FAILED',
+        parse_quality: 'NONE',
+        cli_execution_info: parseResult.cliExecutionInfo,
       });
+    }
 
-      // 사업정보 Gemini AI 정밀 심사 및 자동 추출
-      const aiResult = await extractMetadataLogic(
-        documentId,
-        blocks,
-        rawText,
-        fileName,
-        parsedJson.metadata
-      );
-      const extracted = aiResult.extracted;
-      const auth = authoritativeStore.get(documentId);
+    const parsedJson = parseResult.data;
+    const executionInfo = parseResult.cliExecutionInfo;
+    const documentId = `doc-${Date.now()}`;
+    const blocks = extractBlocksFromParsed(parsedJson);
+    const rawText = parsedJson.raw_text || '';
 
-      const responsePayload = {
-        success: true,
-        message: aiResult.is_ai_powered
-          ? `'${fileName}' 파싱 완료 및 Gemini AI가 제안요청서 계약방법·예산·기간을 정밀 추출했습니다.`
-          : `'${fileName}' 파싱 완료 및 사업정보가 자동으로 추출되었습니다.`,
-        data: {
-          document_id: documentId,
-          version: parsedJson.version || '0.8.2-cli',
-          file_name: fileName,
-          file_size: fileSize,
-          format: docFormat,
-          metadata: {
-            title: parsedJson.metadata?.title || path.parse(fileName).name,
-            author: parsedJson.metadata?.author || '공공행정기안자',
-            created_date: parsedJson.metadata?.created_date || new Date().toISOString().replace('T', ' ').substring(0, 19),
-            modified_date: parsedJson.metadata?.modified_date || new Date().toISOString().replace('T', ' ').substring(0, 19),
-            hwp_version: parsedJson.metadata?.hwp_version || '5.0.3.0',
-            is_compressed: parsedJson.metadata?.is_compressed ?? true,
-            is_encrypted: parsedJson.metadata?.is_encrypted ?? false,
-            page_count: parsedJson.metadata?.page_count || 2,
-            paragraph_count: parsedJson.metadata?.paragraph_count || (parsedJson.sections?.[0]?.paragraphs?.length || 12),
-            table_count: parsedJson.metadata?.table_count || (parsedJson.sections?.[0]?.tables?.length || 2),
-            character_count: parsedJson.metadata?.character_count || (parsedJson.raw_text?.length || 850),
-            word_count: parsedJson.metadata?.word_count || 190,
-          },
-          sections: parsedJson.sections || [
-            {
-              index: 0,
-              page_count: 2,
-              paragraphs: [
-                {
-                  id: 'para_1',
-                  section_index: 0,
-                  paragraph_index: 0,
-                  text: `${path.parse(fileName).name} - 공문서 검토 보고서`,
-                  style_name: '제목',
-                  align: 'CENTER',
-                  text_runs: [
-                    {
-                      text: `${path.parse(fileName).name} - 공문서 검토 보고서`,
-                      font_family: '한컴바탕',
-                      font_size: 16,
-                      is_bold: true,
-                      is_italic: false,
-                      color: '#111827',
-                    },
-                  ],
-                },
-                {
-                  id: 'para_2',
-                  section_index: 0,
-                  paragraph_index: 1,
-                  text: '1. 개요 및 검토 목적',
-                  style_name: '개요 1',
-                  align: 'LEFT',
-                  text_runs: [
-                    {
-                      text: '1. 개요 및 검토 목적',
-                      font_family: '맑은 고딕',
-                      font_size: 13,
-                      is_bold: true,
-                      is_italic: false,
-                      color: '#1e3a8a',
-                    },
-                  ],
-                },
-                {
-                  id: 'para_3',
-                  section_index: 0,
-                  paragraph_index: 2,
-                  text: '   가. 본 문서는 행정업무의 운영 및 혁신에 관한 규정(대통령령)에 따라 작성되었습니다.',
-                  style_name: '개요 2',
-                  align: 'LEFT',
-                  text_runs: [
-                    {
-                      text: '   가. 본 문서는 행정업무의 운영 및 혁신에 관한 규정(대통령령)에 따라 작성되었습니다.',
-                      font_family: '맑은 고딕',
-                      font_size: 11,
-                      is_bold: false,
-                      is_italic: false,
-                      color: '#374151',
-                    },
-                  ],
-                },
-              ],
-              tables: [
-                {
-                  id: 'tbl_1',
-                  section_index: 0,
-                  row_count: 2,
-                  col_count: 3,
-                  caption: '문서 검토 기본 정보 표',
-                  rows: [
-                    {
-                      row_index: 0,
-                      cells: [
-                        { cell_id: 'c_0_0', row: 0, col: 0, row_span: 1, col_span: 1, text: '문서명', is_header: true },
-                        { cell_id: 'c_0_1', row: 0, col: 1, row_span: 1, col_span: 1, text: '기안부서', is_header: true },
-                        { cell_id: 'c_0_2', row: 0, col: 2, row_span: 1, col_span: 1, text: '보존연한', is_header: true },
-                      ],
-                    },
-                    {
-                      row_index: 1,
-                      cells: [
-                        { cell_id: 'c_1_0', row: 1, col: 0, row_span: 1, col_span: 1, text: fileName, is_header: false },
-                        { cell_id: 'c_1_1', row: 1, col: 1, row_span: 1, col_span: 1, text: '디지털혁신담당관', is_header: false },
-                        { cell_id: 'c_1_2', row: 1, col: 2, row_span: 1, col_span: 1, text: '5년', is_header: false },
-                      ],
-                    },
-                  ],
-                },
-              ],
-            },
-          ],
-          raw_text: rawText || `${fileName}\n1. 개요 및 검토 목적\n   가. 본 문서는 행정업무의 운영 및 혁신에 관한 규정(대통령령)에 따라 작성되었습니다.`,
-          ir_json: parsedJson.ir_json || parsedJson,
-          cli_execution_info: executionInfo,
-          parsed_at: new Date().toISOString(),
-          extracted_metadata: {
-            ...extracted,
-            procurement_method_reason: aiResult.procurement_method_reason,
-            extracted_snippets: aiResult.extracted_snippets,
-            is_ai_powered: aiResult.is_ai_powered,
-          },
-          authoritative_metadata: auth,
+    // 파싱된 문서 원문 및 블록 캐시 저장 (후속 온디맨드 AI 재추출 및 상세 검토용)
+    parsedDocCache.set(documentId, {
+      blocks,
+      rawText,
+      fileName,
+      fileSize,
+      docFormat,
+      parsedJson,
+      executionInfo,
+    });
+
+    // 사업정보 Gemini AI 정밀 심사 및 자동 추출 (AuthoritativeMetadata는 사용자 확정 시 생성)
+    const aiResult = await extractMetadataLogic(
+      documentId,
+      blocks,
+      rawText,
+      fileName,
+      parsedJson.metadata
+    );
+    const extracted = aiResult.extracted;
+    const auth = authoritativeStore.get(documentId) || null;
+
+    const responsePayload = {
+      success: true,
+      message: aiResult.is_ai_powered
+        ? `'${fileName}' 파싱 완료 및 Gemini AI가 제안요청서 계약방법·예산·기간을 정밀 추출했습니다.`
+        : `'${fileName}' 파싱 완료 및 사업정보가 자동으로 추출되었습니다.`,
+      data: {
+        document_id: documentId,
+        version: parsedJson.version || '0.8.2-cli',
+        file_name: fileName,
+        file_size: fileSize,
+        format: docFormat,
+        metadata: {
+          title: parsedJson.metadata?.title || path.parse(fileName).name,
+          author: parsedJson.metadata?.author || '',
+          created_date: parsedJson.metadata?.created_date || '',
+          modified_date: parsedJson.metadata?.modified_date || '',
+          hwp_version: parsedJson.metadata?.hwp_version || '',
+          is_compressed: parsedJson.metadata?.is_compressed ?? true,
+          is_encrypted: parsedJson.metadata?.is_encrypted ?? false,
+          page_count: parsedJson.metadata?.page_count || 1,
+          paragraph_count: parsedJson.metadata?.paragraph_count || (parsedJson.sections?.[0]?.paragraphs?.length || 0),
+          table_count: parsedJson.metadata?.table_count || (parsedJson.sections?.[0]?.tables?.length || 0),
+          character_count: parsedJson.metadata?.character_count || (parsedJson.raw_text?.length || 0),
+          word_count: parsedJson.metadata?.word_count || 0,
         },
-      };
-
-      return res.json(responsePayload);
+        sections: parsedJson.sections || [],
+        raw_text: rawText,
+        ir_json: parsedJson.ir_json || parsedJson,
+        cli_execution_info: executionInfo,
+        parsed_at: new Date().toISOString(),
+        extracted_metadata: {
+          ...extracted,
+          procurement_method_reason: aiResult.procurement_method_reason,
+          extracted_snippets: aiResult.extracted_snippets,
+          is_ai_powered: aiResult.is_ai_powered,
+        },
+        authoritative_metadata: auth,
+      },
     };
 
-    // 1단계: rhwp CLI 확인 및 실행
-    if (cliExists) {
-      execFile(rhwpCliPath, ['parse', filePath, '--format', 'json'], { timeout: 30000 }, (error, stdout) => {
-        const durationMs = Date.now() - startTime;
-        if (!error && stdout) {
-          try {
-            const parsed = JSON.parse(stdout.trim());
-            return handleParsedData(parsed, {
-              command: `rhwp parse ${filePath} --format json`,
-              exit_code: 0,
-              duration_ms: durationMs,
-              cli_version: 'rhwp 0.8.2-cli',
-            });
-          } catch (e) {
-            console.warn('rhwp JSON parse fallback triggered:', e);
-          }
-        }
-        // 파이썬 파서로 fallback
-        runPythonExtractor();
-      });
-    } else {
-      runPythonExtractor();
-    }
-
-    // 2단계: Python 기반 HWP/HWPX 네이티브 파서 실행
-    function runPythonExtractor() {
-      if (fs.existsSync(pythonScriptPath)) {
-        execFile('python3', [pythonScriptPath, filePath], { timeout: 30000 }, (pyErr, pyStdout) => {
-          const durationMs = Date.now() - startTime;
-          if (!pyErr && pyStdout) {
-            try {
-              const parsed = JSON.parse(pyStdout.trim());
-              return handleParsedData(parsed, {
-                command: `python3 scripts/hwp_extractor.py ${filePath}`,
-                exit_code: 0,
-                duration_ms: durationMs,
-                cli_version: parsed.version || 'hwp-python-extractor-1.0',
-              });
-            } catch (err) {
-              console.warn('Python extractor output JSON parse failed:', err);
-            }
-          }
-          fallbackHandler();
-        });
-      } else {
-        fallbackHandler();
-      }
-    }
-
-    // 3단계: 안전 폴백
-    function fallbackHandler() {
-      const durationMs = Date.now() - startTime;
-      return handleParsedData({}, {
-        command: `rhwp parse ${filePath} --format json (emulated)`,
-        exit_code: 0,
-        duration_ms: durationMs,
-        cli_version: 'rhwp 0.8.2-cli (fallback engine)',
-      });
-    }
+    return res.json(responsePayload);
   });
 });
 
@@ -694,13 +447,13 @@ const RULES = [
     rule_id: 'RULE-KEYWORD-002',
     rule_name: '자동연장 문구 탐지',
     keyword: '자동연장',
-    category: 'RULE_FIX' as const,
-    severity: 'HIGH' as const,
-    title: '계약 자동연장 독소조항 탐지',
+    category: 'CONDITIONAL' as const,
+    severity: 'MEDIUM' as const,
+    title: '계약 묵시적 자동연장 조항 점검 (상호협의 절차 권고)',
     basis:
-      '약관의 규제에 관한 법률 제9조(계약의 해제·해지) 및 공정거래위원회 표준계약서 규정에 따라, 별도 통지 없이 묵시적으로 계약이 갱신되는 일방적 자동연장 조항은 상대방의 해제권을 부당하게 제한하는 불공정 독소조항에 해당합니다.',
+      '약관의 규제에 관한 법률 및 용역계약 일반조건에 따라, 별도 서면 합의 없이 묵시적으로 계약기간이 자동 갱신되는 규정은 양 당사자의 갱신·종료 의사표시 기회를 제한할 우려가 있어 명시적 서면 합의 절차가 권장됩니다.',
     recommendation:
-      "자동연장 문구를 삭제하거나, '계약 만료 30일 전까지 서면으로 상호 협의하여 갱신 여부를 결정한다'와 같이 당사자 간 상호 합의 절차로 변경하십시오.",
+      "자동연장 문구를 '계약 만료 30일 전까지 서면으로 상호 협의하여 갱신 여부를 결정한다'와 같이 당사자 간 명시적 의사합치 절차로 변경하십시오.",
   },
 ];
 
@@ -755,10 +508,11 @@ function evaluateRuleEngine(projectId: string, blocks: DocumentBlock[]): Finding
     });
 
     // 2. Evaluate Metadata Rule (RULE-META-001):
+    // 담당자가 확정한 Authoritative Metadata가 지방자치단체/지방계약법인 경우에만 엄격 검증 (미확정 시 추정 검증 보류)
     const isLocalGov = authoritativeMeta
       ? authoritativeMeta.client_type === 'LOCAL_GOVERNMENT' ||
         authoritativeMeta.governing_law === 'LOCAL_CONTRACT_ACT'
-      : true;
+      : false;
 
     if (isLocalGov) {
       const stateLawKeywords = [
@@ -992,10 +746,11 @@ app.put('/api/v1/projects/:id/findings/:finding_id/decision', (req, res) => {
   const { id: projectId, finding_id: findingId } = req.params;
   const { decision, reason } = req.body || {};
 
-  if (!decision || (decision !== 'ACCEPTED' && decision !== 'REJECTED' && decision !== 'PENDING')) {
+  const validDecisions = ['ACCEPTED', 'REJECTED', 'PENDING', 'PARTIALLY_ACCEPTED'];
+  if (!decision || !validDecisions.includes(decision)) {
     return res.status(400).json({
       success: false,
-      error: "decision 필드는 'ACCEPTED' 또는 'REJECTED'여야 합니다.",
+      error: "decision 필드는 'ACCEPTED', 'REJECTED', 'PARTIALLY_ACCEPTED', 또는 'PENDING'이어야 합니다.",
     });
   }
 
@@ -1164,24 +919,13 @@ app.put('/api/v1/projects/:id/metadata/authoritative', (req, res) => {
 // GET /api/v1/projects/:id/metadata/authoritative
 app.get('/api/v1/projects/:id/metadata/authoritative', async (req, res) => {
   const projectId = req.params.id;
-  let authoritative = authoritativeStore.get(projectId);
+  const authoritative = authoritativeStore.get(projectId);
 
   if (!authoritative) {
-    const cached = parsedDocCache.get(projectId);
-    await extractMetadataLogic(
-      projectId,
-      cached?.blocks || [],
-      cached?.rawText || '',
-      cached?.fileName || '',
-      cached?.parsedJson?.metadata
-    );
-    authoritative = authoritativeStore.get(projectId);
-  }
-
-  if (!authoritative) {
-    return res.status(404).json({
-      success: false,
-      error: `프로젝트 '${projectId}'의 Authoritative Metadata를 찾을 수 없습니다.`,
+    return res.status(200).json({
+      success: true,
+      message: '담당자 확인 및 확정 대기 중 (미확정)',
+      data: null,
     });
   }
 
