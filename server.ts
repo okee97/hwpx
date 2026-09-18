@@ -941,6 +941,7 @@ app.post('/api/v1/projects/:id/metadata/extract', async (req, res) => {
   const payload = req.body || {};
   const cached = parsedDocCache.get(projectId);
   const blocks = payload.blocks && payload.blocks.length > 0 ? payload.blocks : (cached?.blocks || []);
+  const tables = payload.tables && payload.tables.length > 0 ? payload.tables : (cached?.tables || []);
   const rawText = payload.raw_text || cached?.rawText || '';
   const fileName = payload.file_name || cached?.fileName || '';
 
@@ -950,7 +951,8 @@ app.post('/api/v1/projects/:id/metadata/extract', async (req, res) => {
       blocks,
       rawText,
       fileName,
-      cached?.parsedJson?.metadata
+      cached?.parsedJson?.metadata,
+      tables
     );
     const auth = authoritativeStore.get(projectId);
 
@@ -988,7 +990,8 @@ app.get('/api/v1/projects/:id/metadata/extracted', async (req, res) => {
       cached?.blocks || [],
       cached?.rawText || '',
       cached?.fileName || '',
-      cached?.parsedJson?.metadata
+      cached?.parsedJson?.metadata,
+      cached?.tables || []
     );
     extracted = aiResult.extracted;
   }
@@ -1020,6 +1023,8 @@ app.put('/api/v1/projects/:id/metadata/authoritative', (req, res) => {
     version: nextVersion,
     project_name: payload.project_name,
     client_name: payload.client_name,
+    demand_agency: payload.demand_agency ?? payload.client_name ?? null,
+    contract_agency: payload.contract_agency ?? null,
     client_type: payload.client_type,
     governing_law: payload.governing_law,
     procurement_method: payload.procurement_method,
@@ -1037,6 +1042,7 @@ app.put('/api/v1/projects/:id/metadata/authoritative', (req, res) => {
       (payload.procurement_method === 'NEGOTIATION' ? 'NEGOTIATION' : 'UNKNOWN'),
     budget_amount: payload.budget_amount ?? null,
     estimated_price: payload.estimated_price ?? null,
+    vat_included: payload.vat_included ?? null,
     project_period: payload.project_period ?? null,
     confirmed_by: payload.confirmed_by || 'user_officer',
     note: payload.note ?? null,

@@ -5,7 +5,7 @@ import { isGeminiKeyConfigured, verifyGeminiApiKey } from '../geminiClient';
 import { MetadataExplorer } from './metadataExplorer';
 import { MetadataSpecialistsRunner } from './metadataSpecialists';
 import { MetadataJudge } from './metadataJudge';
-import { validateJudgeDecision } from './metadataSourceValidator';
+import { validateJudgeDecision, inferClientTypeAndLaw } from './metadataSourceValidator';
 import {
   MetadataV4Result,
   PipelineExecutionStats,
@@ -276,14 +276,16 @@ export class MetadataOrchestrator {
       });
     }
 
+    const agencyRule = inferClientTypeAndLaw(foundClientName);
+
     const extracted: ExtractedMetadata = {
       project_id: projectId,
       project_name: foundProjectName,
       client_name: foundClientName || null,
       demand_agency: foundClientName || null,
       contract_agency: null,
-      client_type: 'UNKNOWN',
-      governing_law: 'UNKNOWN',
+      client_type: agencyRule.clientType,
+      governing_law: agencyRule.governingLaw,
       procurement_method: awardMethod === 'NEGOTIATION' ? 'NEGOTIATION' : compMethod === 'RESTRICTED_COMPETITIVE' ? 'RESTRICTED_COMPETITIVE' : 'UNKNOWN',
       competition_method: compMethod,
       award_method: awardMethod,
@@ -292,6 +294,7 @@ export class MetadataOrchestrator {
         : '문서에서 계약방법을 명시적으로 특정할 수 없습니다.',
       budget_amount: budgetAmount,
       estimated_price: estimatedPrice,
+      vat_included: null,
       calculated_candidates: calcCandidates,
       derived_estimated_price: calcCandidates[0]?.amount || null,
       derivation_note: calcCandidates[0]?.note || null,
@@ -299,7 +302,8 @@ export class MetadataOrchestrator {
       confidence_scores: {
         project_name: foundProjectName ? 0.7 : 0.0,
         client_name: foundClientName ? 0.7 : 0.0,
-        governing_law: 0.0,
+        governing_law: agencyRule.confidence,
+        client_type: agencyRule.confidence,
         procurement_method: compMethod !== 'UNKNOWN' ? 0.7 : 0.0,
         competition_method: compMethod !== 'UNKNOWN' ? 0.7 : 0.0,
         award_method: awardMethod !== 'UNKNOWN' ? 0.7 : 0.0,
@@ -350,6 +354,7 @@ export class MetadataOrchestrator {
           rejected_missing_blocks: 0,
           demoted_quote_mismatches: 0,
           numeric_mismatches_rejected: 0,
+          decision_grounding_mismatches: 0,
         },
         models_used: {},
         duration_ms: Date.now() - startTime,

@@ -305,20 +305,38 @@ ${contextText || '증거 없음'}
     budgetPrice: BudgetPriceSpecialistResult,
     period: PeriodSpecialistResult
   ): Promise<ConsistencySpecialistResult> {
-    const prompt = `당신은 공공조달 메타데이터 [교차 검증 및 정합성 분석관(Consistency Specialist)]입니다.
-도메인별 분석관들이 추출한 결과와 원문 증거를 대조하여 상충(Conflict), 모순, 미비점을 탐지하십시오.
+    const formatEvidence = (evList?: any[]) => {
+      if (!evList || evList.length === 0) return '근거 인용구 없음';
+      return evList.map((e) => `[${e.block_id}] "${e.quote}"`).join(' | ');
+    };
 
-[검토 대상]:
-- 사업명/기관: 사업명="${projectAgency.project_name.value}", 수요기관="${projectAgency.demand_agency.value}", 계약기관="${projectAgency.contract_agency.value}"
-- 계약방법: 경쟁방법="${procurement.competition_method.value}", 낙찰방법="${procurement.award_method.value}"
-- 예산/가격: 사업예산=${budgetPrice.budget_amount.value}, 추정가격=${budgetPrice.estimated_price.value}
-- 사업기간: "${period.project_period.value}" (status: ${period.project_period.status})
+    const prompt = `당신은 공공조달 메타데이터 [교차 검증 및 정합성 분석관(Consistency Specialist)]입니다.
+도메인별 분석관들이 추출한 결과와 실제 원문 증거를 대조하여 상충(Conflict), 모순, 미비점을 탐지하십시오.
+
+[분석관별 추출 결과 및 원문 증거]:
+1. 사업명/기관:
+   - 사업명: "${projectAgency.project_name.value}" (증거: ${formatEvidence(projectAgency.project_name.evidence)})
+   - 수요기관: "${projectAgency.demand_agency.value}" (증거: ${formatEvidence(projectAgency.demand_agency.evidence)})
+   - 계약기관: "${projectAgency.contract_agency.value}" (증거: ${formatEvidence(projectAgency.contract_agency.evidence)})
+2. 계약/입찰방법:
+   - 경쟁방법: "${procurement.competition_method.value}" (증거: ${formatEvidence(procurement.competition_method.evidence)})
+   - 낙찰방법: "${procurement.award_method.value}" (증거: ${formatEvidence(procurement.award_method.evidence)})
+3. 예산 및 가격:
+   - 사업예산: ${budgetPrice.budget_amount.value} (증거: ${formatEvidence(budgetPrice.budget_amount.evidence)})
+   - 추정가격: ${budgetPrice.estimated_price.value} (증거: ${formatEvidence(budgetPrice.estimated_price.evidence)})
+4. 사업기간:
+   - 기간: "${period.project_period.value}" (증거: ${formatEvidence(period.project_period.evidence)})
+
+[Explorer가 수집한 추가 발굴 증거 (Dossier)]:
+- 사업기간 후보: ${dossier.period.map((p) => `[${p.block_id}] "${p.quote}"`).join(' \n ')}
+- 예산 후보: ${dossier.budget.map((b) => `[${b.block_id}] "${b.quote}"`).join(' \n ')}
+- 계약방법 후보: ${dossier.competition_method.map((c) => `[${c.block_id}] "${c.quote}"`).join(' \n ')}
 
 [점검 포인트]:
-1. 본문과 표의 기재 내용 불일치 여부
-2. 경쟁방법과 낙찰방법의 법적 조합 유효성
-3. 사업기간 불일치 또는 상충 여부
-4. 수요기관과 계약기관의 혼동 여부
+1. 본문과 표 또는 개요와 세부내용 간의 기재 내용 불일치(예: 개요는 8개월인데 세부일정표는 10개월) 여부
+2. 경쟁방법과 낙찰방법의 법적 조합 유효성 (일반경쟁인데 제한사유 명시, 또는 조건부 수의계약 혼동 등)
+3. 수요기관과 계약기관의 혼동 여부
+4. 예산과 추정가격의 혼동 또는 중복 표기 여부
 
 [반환 JSON]:
 {

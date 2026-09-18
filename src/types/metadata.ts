@@ -76,6 +76,7 @@ export interface ExtractedMetadata {
   fallback_used?: boolean;
   budget_amount?: number | null;
   estimated_price?: number | null;
+  vat_included?: boolean | null;      // 부가가치세 포함 여부
   calculated_candidates?: CalculatedCandidate[]; // 자동 덮어쓰지 않는 참고 계산값 (예: 총사업예산 ÷ 1.1)
   derived_estimated_price?: number | null;
   derivation_note?: string | null;
@@ -115,6 +116,8 @@ export interface AuthoritativeMetadata {
   version: number;
   project_name: string;
   client_name: string;
+  demand_agency?: string | null;     // 수요기관
+  contract_agency?: string | null;   // 계약기관
   client_type: ClientType;
   governing_law: GoverningLaw;
   procurement_method: ProcurementMethod;
@@ -122,6 +125,7 @@ export interface AuthoritativeMetadata {
   award_method?: AwardMethod;
   budget_amount?: number | null;
   estimated_price?: number | null;
+  vat_included?: boolean | null;
   project_period?: string | null;
   confirmed_by?: string;
   note?: string | null;
@@ -131,6 +135,8 @@ export interface AuthoritativeMetadata {
 export interface AuthoritativeMetadataUpdateDto {
   project_name: string;
   client_name: string;
+  demand_agency?: string | null;     // 수요기관
+  contract_agency?: string | null;   // 계약기관
   client_type: ClientType;
   governing_law: GoverningLaw;
   procurement_method: ProcurementMethod;
@@ -138,6 +144,7 @@ export interface AuthoritativeMetadataUpdateDto {
   award_method?: AwardMethod;
   budget_amount?: number | null;
   estimated_price?: number | null;
+  vat_included?: boolean | null;
   project_period?: string | null;
   confirmed_by?: string;
   note?: string | null;

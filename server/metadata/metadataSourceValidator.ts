@@ -5,6 +5,10 @@ import {
   EvidenceStatus,
   EvidenceQuote,
   CalculatedCandidate,
+  CompetitionMethod,
+  AwardMethod,
+  ClientType,
+  GoverningLaw,
 } from '../../src/types/metadata';
 import {
   JudgeDecisionPayload,
@@ -29,10 +33,9 @@ export function normalizeText(text: string): string {
 /**
  * Strips cosmetic surrounding punctuation or quotes often added by LLMs.
  */
-function cleanQuoteString(raw: string): string {
+export function cleanQuoteString(raw: string): string {
   if (!raw) return '';
   let cleaned = raw.trim();
-  // Remove wrapping markdown quotes or quotation marks
   cleaned = cleaned.replace(/^["'“”‘’「」『』\[\]]+/, '').replace(/["'“”‘’「」『』\[\]]+$/, '');
   return cleaned.trim();
 }
@@ -89,13 +92,13 @@ export function quoteContainsNumber(quote: string, targetAmount: number): boolea
 export function calculateConfidence(status: EvidenceStatus, hasValidEvidence: boolean): number {
   switch (status) {
     case 'EXPLICIT':
-      return hasValidEvidence ? 0.95 : 0.4;
+      return hasValidEvidence ? 0.95 : 0.0;
     case 'INFERRED':
-      return hasValidEvidence ? 0.75 : 0.6;
+      return hasValidEvidence ? 0.8 : 0.5;
     case 'CALCULATED':
       return 0.8;
     case 'CONFLICT':
-      return 0.35;
+      return 0.3;
     case 'UNVERIFIED':
     default:
       return 0.0;
@@ -103,16 +106,243 @@ export function calculateConfidence(status: EvidenceStatus, hasValidEvidence: bo
 }
 
 /**
- * Deterministic Source Validator (Backend Code - NO LLM)
+ * Deterministic rules to infer client type and governing law from verified agency names.
+ */
+export function inferClientTypeAndLaw(agencyName?: string | null): {
+  clientType: ClientType;
+  governingLaw: GoverningLaw;
+  confidence: number;
+} {
+  if (!agencyName || agencyName.trim().length === 0) {
+    return { clientType: 'UNKNOWN', governingLaw: 'UNKNOWN', confidence: 0.0 };
+  }
+
+  const name = normalizeText(agencyName);
+
+  // Local government patterns
+  const localGovKeywords = [
+    '시청', '구청', '군청', '도청', '특별시', '광역시', '특별자치',
+    '교육청', '주민센터', '행정복지센터', '자치구', '시·도',
+  ];
+  if (localGovKeywords.some((kw) => name.includes(kw))) {
+    return {
+      clientType: 'LOCAL_GOVERNMENT',
+      governingLaw: 'LOCAL_CONTRACT_ACT',
+      confidence: 0.95,
+    };
+  }
+
+  // Public enterprise / institution patterns
+  const publicInstKeywords = [
+    '공사', '공단', '재단', '진흥원', '연구원', '병원', '원수원',
+    '센터', '협회', '학회', '대학교', '기술원', '개발원', '정보원',
+  ];
+  if (publicInstKeywords.some((kw) => name.includes(kw))) {
+    return {
+      clientType: 'PUBLIC_INSTITUTION',
+      governingLaw: 'PUBLIC_ENTERPRISE_RULE',
+      confidence: 0.9,
+    };
+  }
+
+  // Central government ministry / agency patterns
+  const centralKeywords = [
+    '부', '처', '청', '위원회', '원', '국', '기획단', '추진단',
+  ];
+  if (centralKeywords.some((kw) => name.endsWith(kw) || name.includes(kw))) {
+    return {
+      clientType: 'CENTRAL_GOVERNMENT',
+      governingLaw: 'STATE_CONTRACT_ACT',
+      confidence: 0.95,
+    };
+  }
+
+  return { clientType: 'UNKNOWN', governingLaw: 'UNKNOWN', confidence: 0.4 };
+}
+
+/**
+ * Semantic Decision Grounding check for Competition Method.
+ * Ensures that if RESTRICTED_COMPETITIVE is chosen, the quote genuinely mentions restriction terms,
+ * and does not just state "일반경쟁입찰".
+ */
+export function checkCompetitionMethodGrounding(
+  method: CompetitionMethod,
+  quote: string
+): { valid: boolean; reason?: string } {
+  const norm = normalizeText(quote);
+
+  if (method === 'RESTRICTED_COMPETITIVE') {
+    const restrictionKeywords = [
+      '제한경쟁', '제한 경쟁', '지역제한', '실적제한', '중소기업자간',
+      '참가자격을 제한', '자격을 제한', '제한적', '제한입찰',
+    ];
+    const hasRestriction = restrictionKeywords.some((kw) => norm.includes(kw));
+    if (!hasRestriction) {
+      if (norm.includes('일반경쟁') || norm.includes('일반 경쟁')) {
+        return {
+          valid: false,
+          reason: `원문에는 '일반경쟁'만 명시되어 있으나 '제한경쟁'으로 잘못 판정됨`,
+        };
+      }
+      return {
+        valid: false,
+        reason: `원문 인용구에 제한경쟁 관련 표제어(제한경쟁, 지역제한, 실적제한 등)가 없음`,
+      };
+    }
+    return { valid: true };
+  }
+
+  if (method === 'OPEN_COMPETITIVE') {
+    const openKeywords = ['일반경쟁', '일반 경쟁', '일반입찰'];
+    const hasOpen = openKeywords.some((kw) => norm.includes(kw));
+    if (!hasOpen) {
+      return { valid: false, reason: `원문 인용구에 일반경쟁 관련 표제어가 없음` };
+    }
+    return { valid: true };
+  }
+
+  if (method === 'NOMINATED_COMPETITIVE') {
+    const hasNom = norm.includes('지명경쟁') || norm.includes('지명 경쟁') || norm.includes('지명입찰');
+    if (!hasNom) {
+      return { valid: false, reason: `원문 인용구에 지명경쟁 관련 표제어가 없음` };
+    }
+    return { valid: true };
+  }
+
+  if (method === 'PRIVATE_CONTRACT') {
+    const hasPrivate = norm.includes('수의계약') || norm.includes('수의 계약');
+    if (!hasPrivate) {
+      return { valid: false, reason: `원문 인용구에 수의계약 관련 표제어가 없음` };
+    }
+    return { valid: true };
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Semantic Decision Grounding check for Award Method.
+ */
+export function checkAwardMethodGrounding(
+  method: AwardMethod,
+  quote: string
+): { valid: boolean; reason?: string } {
+  const norm = normalizeText(quote);
+
+  if (method === 'NEGOTIATION') {
+    const negKeywords = [
+      '협상에 의한', '협상에의한', '협상 계약', '협상에 의한 계약',
+      '기술능력평가', '기술평가', '종합평가', '협상적격자',
+    ];
+    const hasNeg = negKeywords.some((kw) => norm.includes(kw));
+    if (!hasNeg) {
+      return { valid: false, reason: `원문 인용구에 협상계약 관련 표제어(협상에 의한 계약 등)가 없음` };
+    }
+    return { valid: true };
+  }
+
+  if (method === 'QUALIFICATION_REVIEW') {
+    const hasQual = norm.includes('적격심사') || norm.includes('적격 심사');
+    if (!hasQual) {
+      return { valid: false, reason: `원문 인용구에 적격심사 관련 표제어가 없음` };
+    }
+    return { valid: true };
+  }
+
+  if (method === 'LOWEST_PRICE') {
+    const hasLowest = norm.includes('최저가') || norm.includes('최저가낙찰');
+    if (!hasLowest) {
+      return { valid: false, reason: `원문 인용구에 최저가 관련 표제어가 없음` };
+    }
+    return { valid: true };
+  }
+
+  if (method === 'TWO_STAGE') {
+    const has2Stage = norm.includes('2단계') || norm.includes('이단계') || norm.includes('규격가격분리');
+    if (!has2Stage) {
+      return { valid: false, reason: `원문 인용구에 2단계입찰 관련 표제어가 없음` };
+    }
+    return { valid: true };
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Semantic Decision Grounding check for Estimated Price.
+ * Requires both the numeric amount AND an explicit "추정가격" heading/keyword in the quote.
+ */
+export function checkEstimatedPriceGrounding(
+  amount: number,
+  quote: string
+): { valid: boolean; reason?: string } {
+  const norm = normalizeText(quote);
+  const hasHeading =
+    norm.includes('추정가격') ||
+    norm.includes('추정 가격') ||
+    norm.includes('추정금액') ||
+    norm.includes('추정 금액');
+
+  if (!hasHeading) {
+    return {
+      valid: false,
+      reason: `원문 인용구에 '추정가격' 명시적 표제어가 없음 (단순 예산 금액 인용 거부)`,
+    };
+  }
+
+  const hasNum = quoteContainsNumber(quote, amount);
+  if (!hasNum) {
+    return {
+      valid: false,
+      reason: `원문 인용구에 추정가격 금액(${amount}원)이 존재하지 않음`,
+    };
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Semantic Decision Grounding check for Agency Names.
+ * Verifies that the extracted agency name (or key tokens of it) actually appears in the quote.
+ */
+export function checkAgencyNameGrounding(
+  agencyName: string,
+  quote: string
+): { valid: boolean; reason?: string } {
+  if (!agencyName || agencyName.trim().length === 0) {
+    return { valid: false, reason: '기관명이 비어있음' };
+  }
+
+  const normAgency = normalizeText(agencyName).replace(/\s+/g, '');
+  const normQuote = normalizeText(quote).replace(/\s+/g, '');
+
+  if (normQuote.includes(normAgency)) {
+    return { valid: true };
+  }
+
+  // Token based match (e.g. "행정안전부" in "수요기관: 행정안전부 디지털정부국")
+  const tokens = agencyName.split(/\s+/).filter((t) => t.length >= 2);
+  const matchedTokens = tokens.filter((t) => normQuote.includes(t));
+  if (matchedTokens.length > 0) {
+    return { valid: true };
+  }
+
+  return {
+    valid: false,
+    reason: `기관명 '${agencyName}'이 인용구에 존재하지 않음`,
+  };
+}
+
+/**
+ * Deterministic Source Validator v4 (Pure Backend Code - NO LLM)
  *
- * Enforces strict verification:
- * 1. Checks if block_id actually exists in document blocks
- * 2. Checks if normalized quote is a substring of normalized block.text
- * 3. For tables, verifies table and cell locators exist
- * 4. Checks if candidate numbers (budget, estimated price) actually exist in the quote
- * 5. Rejects EXPLICIT status if no valid quote exists (demotes to UNVERIFIED or INFERRED)
- * 6. Drops missing block_ids
- * 7. Calculates grounded confidence scores
+ * Enforces strict two-tier verification:
+ * 1. Evidence Authenticity: Checks if block_id exists and normalized quote is an exact substring.
+ * 2. Decision Grounding: Checks if the judge's semantic decision is genuinely supported by the quote.
+ *
+ * CRITICAL ZERO-TOLERANCE RULE:
+ * If an explicit decision fails evidence or grounding validation, the candidate value
+ * is immediately reset to UNKNOWN / null so users are never misled.
  */
 export function validateJudgeDecision(
   judgeDecision: JudgeDecisionPayload,
@@ -133,6 +363,7 @@ export function validateJudgeDecision(
     rejected_missing_blocks: 0,
     demoted_quote_mismatches: 0,
     numeric_mismatches_rejected: 0,
+    decision_grounding_mismatches: 0,
   };
 
   const validationLogs: string[] = [];
@@ -142,15 +373,19 @@ export function validateJudgeDecision(
   const sourceReferences: Record<string, string> = {};
   const confidenceScores: Record<string, number> = {};
 
-  // Helper to validate evidence array for a field
+  // Helper to validate evidence array and optional semantic grounding
   const validateFieldEvidence = (
     fieldKey: string,
     initialStatus: EvidenceStatus,
     evidenceList: Array<{ block_id: string; quote: string; table_id?: string }>,
-    numericCheckValue?: number | null
+    options?: {
+      numericCheckValue?: number | null;
+      semanticCheck?: (quote: string) => { valid: boolean; reason?: string };
+    }
   ): { status: EvidenceStatus; verifiedQuote: EvidenceQuote | null } => {
     let finalStatus: EvidenceStatus = initialStatus;
     let primaryQuote: EvidenceQuote | null = null;
+    let hasSemanticConflict = false;
 
     if (!evidenceList || evidenceList.length === 0) {
       if (initialStatus === 'EXPLICIT') {
@@ -172,67 +407,70 @@ export function validateJudgeDecision(
         continue;
       }
 
+      let isSubstring = false;
+      let matchedId = blockId;
+
       const realBlock = blockMap.get(blockId);
-      if (!realBlock) {
-        // Check if it's a table locator (e.g. tbl_0_1)
-        if (ev.table_id && tableMap.has(ev.table_id)) {
-          const tbl = tableMap.get(ev.table_id)!;
-          const tableNorm = normalizeText(
-            tbl.caption + ' ' + tbl.rows.map((r) => r.join(' ')).join(' ')
-          );
-          const quoteNorm = normalizeText(rawQuote);
-          if (quoteNorm.length >= 2 && tableNorm.includes(quoteNorm)) {
-            stats.verified_evidence_count++;
-            primaryQuote = {
-              block_id: ev.table_id,
-              quote: rawQuote,
-              status: finalStatus,
-              table_id: ev.table_id,
-            };
-            break;
-          }
+      if (realBlock) {
+        const normBlockText = normalizeText(realBlock.text);
+        const normQuote = normalizeText(rawQuote);
+        if (normQuote && normQuote.length >= 2 && normBlockText.includes(normQuote)) {
+          isSubstring = true;
         }
-
-        stats.rejected_missing_blocks++;
-        validationLogs.push(`[${fieldKey}] 존재하지 않는 block_id '${blockId}' 거부됨`);
-        continue;
-      }
-
-      // Check substring match
-      const normBlockText = normalizeText(realBlock.text);
-      const normQuote = normalizeText(rawQuote);
-
-      if (!normQuote || normQuote.length < 2) {
-        stats.demoted_quote_mismatches++;
-        validationLogs.push(`[${fieldKey}] 인용구 길이가 2자 미만으로 유효하지 않음`);
-        continue;
-      }
-
-      const isSubstring = normBlockText.includes(normQuote);
-      if (!isSubstring) {
-        stats.demoted_quote_mismatches++;
-        validationLogs.push(
-          `[${fieldKey}] 인용구 불일치 거부 (블록: ${blockId}): "${rawQuote.slice(0, 30)}..." != "${realBlock.text.slice(0, 30)}..."`
+      } else if (ev.table_id && tableMap.has(ev.table_id)) {
+        const tbl = tableMap.get(ev.table_id)!;
+        const tableNorm = normalizeText(
+          tbl.caption + ' ' + tbl.rows.map((r) => r.join(' ')).join(' ')
         );
+        const quoteNorm = normalizeText(rawQuote);
+        if (quoteNorm.length >= 2 && tableNorm.includes(quoteNorm)) {
+          isSubstring = true;
+          matchedId = ev.table_id;
+        }
+      }
+
+      if (!isSubstring) {
+        if (!realBlock && (!ev.table_id || !tableMap.has(ev.table_id))) {
+          stats.rejected_missing_blocks++;
+          validationLogs.push(`[${fieldKey}] 존재하지 않는 block_id '${blockId}' 거부됨`);
+        } else {
+          stats.demoted_quote_mismatches++;
+          validationLogs.push(
+            `[${fieldKey}] 인용구 원문 불일치 거부 (${blockId}): "${rawQuote.slice(0, 30)}..."`
+          );
+        }
         continue;
       }
 
-      // If a numeric value is being judged (e.g. budget, estimated price)
-      if (numericCheckValue !== undefined && numericCheckValue !== null && numericCheckValue > 0) {
-        const hasNum = quoteContainsNumber(rawQuote, numericCheckValue);
+      // Numeric check
+      if (options?.numericCheckValue !== undefined && options?.numericCheckValue !== null && options.numericCheckValue > 0) {
+        const hasNum = quoteContainsNumber(rawQuote, options.numericCheckValue);
         if (!hasNum) {
           stats.numeric_mismatches_rejected++;
           validationLogs.push(
-            `[${fieldKey}] 숫자 불일치 (${numericCheckValue}원이 인용구에 없음): "${rawQuote}"`
+            `[${fieldKey}] 숫자 불일치 (${options.numericCheckValue}원이 인용구에 없음): "${rawQuote}"`
           );
           continue;
         }
       }
 
-      // If we reach here, evidence is genuinely verified!
+      // Semantic Grounding check
+      if (options?.semanticCheck) {
+        const semResult = options.semanticCheck(rawQuote);
+        if (!semResult.valid) {
+          stats.decision_grounding_mismatches++;
+          hasSemanticConflict = true;
+          validationLogs.push(
+            `[${fieldKey}] 판단-근거 의미 불일치 거부: ${semResult.reason} (인용: "${rawQuote.slice(0, 40)}")`
+          );
+          continue;
+        }
+      }
+
+      // Genuine evidence verified!
       stats.verified_evidence_count++;
       primaryQuote = {
-        block_id: blockId,
+        block_id: matchedId,
         quote: rawQuote,
         status: finalStatus,
         table_id: ev.table_id,
@@ -241,7 +479,10 @@ export function validateJudgeDecision(
     }
 
     if (!primaryQuote) {
-      if (initialStatus === 'EXPLICIT') {
+      if (hasSemanticConflict) {
+        finalStatus = 'CONFLICT';
+        validationLogs.push(`[${fieldKey}] 원문 인용구와 AI 판단 간 의미적 상충 발생으로 CONFLICT 설정`);
+      } else if (initialStatus === 'EXPLICIT') {
         finalStatus = 'UNVERIFIED';
         validationLogs.push(`[${fieldKey}] 유효한 원문 인용구가 없어 EXPLICIT에서 UNVERIFIED로 강등`);
       }
@@ -251,54 +492,129 @@ export function validateJudgeDecision(
   };
 
   // 1. Project Name
+  let finalProjectName: string | null = judgeDecision.project_name.value || null;
   const projNameVal = validateFieldEvidence(
     'project_name',
     judgeDecision.project_name.status,
     judgeDecision.project_name.evidence
   );
   evidenceStatus.project_name = projNameVal.status;
-  if (projNameVal.verifiedQuote) evidenceQuotes.project_name = projNameVal.verifiedQuote;
+  if (projNameVal.verifiedQuote) {
+    evidenceQuotes.project_name = projNameVal.verifiedQuote;
+  } else if (judgeDecision.project_name.status === 'EXPLICIT') {
+    // If claimed explicit but falsified, clear value
+    finalProjectName = null;
+  }
   confidenceScores.project_name = calculateConfidence(projNameVal.status, !!projNameVal.verifiedQuote);
   sourceReferences.project_name = projNameVal.verifiedQuote?.block_id || 'overview';
 
-  // 2. Client Name & Demand Agency
-  const clientVal = validateFieldEvidence(
-    'client_name',
-    judgeDecision.client_name.status,
-    judgeDecision.client_name.evidence
+  // 2. Demand Agency (수요기관)
+  let finalDemandAgency: string | null = judgeDecision.demand_agency.value || null;
+  const demandVal = validateFieldEvidence(
+    'demand_agency',
+    judgeDecision.demand_agency.status,
+    judgeDecision.demand_agency.evidence,
+    {
+      semanticCheck: finalDemandAgency ? (q) => checkAgencyNameGrounding(finalDemandAgency!, q) : undefined,
+    }
   );
-  evidenceStatus.client_name = clientVal.status;
-  if (clientVal.verifiedQuote) evidenceQuotes.client_name = clientVal.verifiedQuote;
-  confidenceScores.client_name = calculateConfidence(clientVal.status, !!clientVal.verifiedQuote);
-  sourceReferences.client_name = clientVal.verifiedQuote?.block_id || 'agency';
+  evidenceStatus.demand_agency = demandVal.status;
+  if (demandVal.verifiedQuote) {
+    evidenceQuotes.demand_agency = demandVal.verifiedQuote;
+  } else if (judgeDecision.demand_agency.status === 'EXPLICIT') {
+    finalDemandAgency = null;
+  }
+  confidenceScores.demand_agency = calculateConfidence(demandVal.status, !!demandVal.verifiedQuote);
+  sourceReferences.demand_agency = demandVal.verifiedQuote?.block_id || 'agency';
 
-  // 3. Client Type
-  evidenceStatus.client_type = judgeDecision.client_type.status;
-  confidenceScores.client_type = calculateConfidence(judgeDecision.client_type.status, true);
+  // 3. Contract Agency (계약/공고기관)
+  let finalContractAgency: string | null = judgeDecision.contract_agency.value || null;
+  const contractVal = validateFieldEvidence(
+    'contract_agency',
+    judgeDecision.contract_agency.status,
+    judgeDecision.contract_agency.evidence,
+    {
+      semanticCheck: finalContractAgency ? (q) => checkAgencyNameGrounding(finalContractAgency!, q) : undefined,
+    }
+  );
+  evidenceStatus.contract_agency = contractVal.status;
+  if (contractVal.verifiedQuote) {
+    evidenceQuotes.contract_agency = contractVal.verifiedQuote;
+  } else if (judgeDecision.contract_agency.status === 'EXPLICIT') {
+    finalContractAgency = null;
+  }
+  confidenceScores.contract_agency = calculateConfidence(contractVal.status, !!contractVal.verifiedQuote);
+  sourceReferences.contract_agency = contractVal.verifiedQuote?.block_id || 'contract_agency';
 
-  // 4. Governing Law
-  evidenceStatus.governing_law = judgeDecision.governing_law.status;
-  confidenceScores.governing_law = calculateConfidence(judgeDecision.governing_law.status, true);
+  // Client Name: Default to demand_agency
+  const finalClientName = finalDemandAgency || judgeDecision.client_name?.value || null;
+  evidenceStatus.client_name = evidenceStatus.demand_agency || judgeDecision.client_name?.status || 'UNVERIFIED';
+  confidenceScores.client_name = confidenceScores.demand_agency || 0.0;
+  if (evidenceQuotes.demand_agency) evidenceQuotes.client_name = evidenceQuotes.demand_agency;
 
-  // 5. Competition Method
+  // 4. Client Type & Governing Law: Grounded deterministic mapping based on verified agency
+  const inferredAgencyRules = inferClientTypeAndLaw(finalDemandAgency || finalContractAgency);
+  let finalClientType: ClientType = 'UNKNOWN';
+  let finalGoverningLaw: GoverningLaw = 'UNKNOWN';
+
+  if (inferredAgencyRules.clientType !== 'UNKNOWN') {
+    finalClientType = inferredAgencyRules.clientType;
+    finalGoverningLaw = inferredAgencyRules.governingLaw;
+    evidenceStatus.client_type = 'INFERRED';
+    evidenceStatus.governing_law = 'INFERRED';
+    confidenceScores.client_type = inferredAgencyRules.confidence;
+    confidenceScores.governing_law = inferredAgencyRules.confidence;
+  } else if (judgeDecision.client_type.value && judgeDecision.client_type.value !== 'UNKNOWN') {
+    finalClientType = judgeDecision.client_type.value;
+    finalGoverningLaw = judgeDecision.governing_law.value || 'UNKNOWN';
+    evidenceStatus.client_type = judgeDecision.client_type.status;
+    evidenceStatus.governing_law = judgeDecision.governing_law.status;
+    confidenceScores.client_type = 0.5;
+    confidenceScores.governing_law = 0.5;
+  } else {
+    evidenceStatus.client_type = 'UNVERIFIED';
+    evidenceStatus.governing_law = 'UNVERIFIED';
+    confidenceScores.client_type = 0.0;
+    confidenceScores.governing_law = 0.0;
+  }
+
+  // 5. Competition Method (경쟁방법) - Strict Decision Grounding
+  let finalCompetitionMethod: CompetitionMethod = judgeDecision.competition_method.value || 'UNKNOWN';
   const compVal = validateFieldEvidence(
     'competition_method',
     judgeDecision.competition_method.status,
-    judgeDecision.competition_method.evidence
+    judgeDecision.competition_method.evidence,
+    {
+      semanticCheck: (quote) => checkCompetitionMethodGrounding(finalCompetitionMethod, quote),
+    }
   );
   evidenceStatus.competition_method = compVal.status;
-  if (compVal.verifiedQuote) evidenceQuotes.competition_method = compVal.verifiedQuote;
+  if (compVal.verifiedQuote) {
+    evidenceQuotes.competition_method = compVal.verifiedQuote;
+  } else {
+    // If validation fails (or falsified), reset value to UNKNOWN
+    finalCompetitionMethod = 'UNKNOWN';
+  }
   confidenceScores.competition_method = calculateConfidence(compVal.status, !!compVal.verifiedQuote);
   sourceReferences.competition_method = compVal.verifiedQuote?.block_id || 'competition';
 
-  // 6. Award Method
+  // 6. Award Method (낙찰방법) - Strict Decision Grounding
+  let finalAwardMethod: AwardMethod = judgeDecision.award_method.value || 'UNKNOWN';
   const awardVal = validateFieldEvidence(
     'award_method',
     judgeDecision.award_method.status,
-    judgeDecision.award_method.evidence
+    judgeDecision.award_method.evidence,
+    {
+      semanticCheck: (quote) => checkAwardMethodGrounding(finalAwardMethod, quote),
+    }
   );
   evidenceStatus.award_method = awardVal.status;
-  if (awardVal.verifiedQuote) evidenceQuotes.award_method = awardVal.verifiedQuote;
+  if (awardVal.verifiedQuote) {
+    evidenceQuotes.award_method = awardVal.verifiedQuote;
+  } else {
+    // If validation fails, reset value to UNKNOWN
+    finalAwardMethod = 'UNKNOWN';
+  }
   confidenceScores.award_method = calculateConfidence(awardVal.status, !!awardVal.verifiedQuote);
   sourceReferences.award_method = awardVal.verifiedQuote?.block_id || 'award';
 
@@ -308,25 +624,27 @@ export function validateJudgeDecision(
     'budget_amount',
     judgeDecision.budget_amount.status,
     judgeDecision.budget_amount.evidence,
-    validBudget
+    { numericCheckValue: validBudget }
   );
   evidenceStatus.budget_amount = budgetVal.status;
   if (budgetVal.verifiedQuote) {
     evidenceQuotes.budget_amount = budgetVal.verifiedQuote;
-  } else if (validBudget && budgetVal.status === 'UNVERIFIED') {
-    // If budget was explicitly claimed but quote failed numeric check, invalidate the value
+  } else {
     validBudget = null;
   }
   confidenceScores.budget_amount = calculateConfidence(budgetVal.status, !!budgetVal.verifiedQuote);
   sourceReferences.budget_amount = budgetVal.verifiedQuote?.block_id || 'budget';
 
-  // 8. Estimated Price (Must strictly not overwrite budget, must be explicit in document)
+  // 8. Estimated Price (Strict: Requires number AND explicit '추정가격' keyword in quote)
   let validEstimated: number | null = judgeDecision.estimated_price.value;
   const estVal = validateFieldEvidence(
     'estimated_price',
     judgeDecision.estimated_price.status,
     judgeDecision.estimated_price.evidence,
-    validEstimated
+    {
+      numericCheckValue: validEstimated,
+      semanticCheck: validEstimated ? (q) => checkEstimatedPriceGrounding(validEstimated!, q) : undefined,
+    }
   );
   evidenceStatus.estimated_price = estVal.status;
   if (estVal.verifiedQuote) {
@@ -338,13 +656,18 @@ export function validateJudgeDecision(
   sourceReferences.estimated_price = estVal.verifiedQuote?.block_id || 'estimated';
 
   // 9. Project Period
+  let validPeriod: string | null = judgeDecision.project_period.value || null;
   const periodVal = validateFieldEvidence(
     'project_period',
     judgeDecision.project_period.status,
     judgeDecision.project_period.evidence
   );
   evidenceStatus.project_period = periodVal.status;
-  if (periodVal.verifiedQuote) evidenceQuotes.project_period = periodVal.verifiedQuote;
+  if (periodVal.verifiedQuote) {
+    evidenceQuotes.project_period = periodVal.verifiedQuote;
+  } else if (judgeDecision.project_period.status === 'EXPLICIT') {
+    validPeriod = null;
+  }
   confidenceScores.project_period = calculateConfidence(periodVal.status, !!periodVal.verifiedQuote);
   sourceReferences.project_period = periodVal.verifiedQuote?.block_id || 'period';
 
@@ -360,34 +683,35 @@ export function validateJudgeDecision(
 
   // Derive legacy procurement_method for backward compatibility
   const derivedProcurementMethod =
-    judgeDecision.award_method.value === 'NEGOTIATION'
+    finalAwardMethod === 'NEGOTIATION'
       ? 'NEGOTIATION'
-      : judgeDecision.competition_method.value === 'RESTRICTED_COMPETITIVE'
+      : finalCompetitionMethod === 'RESTRICTED_COMPETITIVE'
       ? 'RESTRICTED_COMPETITIVE'
-      : judgeDecision.competition_method.value === 'OPEN_COMPETITIVE'
+      : finalCompetitionMethod === 'OPEN_COMPETITIVE'
       ? 'OPEN_COMPETITIVE'
-      : judgeDecision.competition_method.value === 'PRIVATE_CONTRACT'
+      : finalCompetitionMethod === 'PRIVATE_CONTRACT'
       ? 'PRIVATE_CONTRACT'
       : 'UNKNOWN';
 
   const validatedMetadata: ExtractedMetadata = {
     project_id: projectId,
-    project_name: judgeDecision.project_name.value || null,
-    client_name: judgeDecision.client_name.value || judgeDecision.demand_agency.value || null,
-    demand_agency: judgeDecision.demand_agency.value || judgeDecision.client_name.value || null,
-    contract_agency: judgeDecision.contract_agency.value || null,
-    client_type: judgeDecision.client_type.value || 'UNKNOWN',
-    governing_law: judgeDecision.governing_law.value || 'UNKNOWN',
+    project_name: finalProjectName,
+    client_name: finalClientName,
+    demand_agency: finalDemandAgency,
+    contract_agency: finalContractAgency,
+    client_type: finalClientType,
+    governing_law: finalGoverningLaw,
     procurement_method: derivedProcurementMethod,
-    competition_method: judgeDecision.competition_method.value || 'UNKNOWN',
-    award_method: judgeDecision.award_method.value || 'UNKNOWN',
+    competition_method: finalCompetitionMethod,
+    award_method: finalAwardMethod,
     procurement_method_reason: judgeDecision.procurement_method_reason || 'Source Validator 검증 완료',
     budget_amount: validBudget,
     estimated_price: validEstimated,
+    vat_included: judgeDecision.vat_included?.value ?? null,
     calculated_candidates: calcCandidates,
     derived_estimated_price: calcCandidates[0]?.amount || null,
     derivation_note: calcCandidates[0]?.note || null,
-    project_period: judgeDecision.project_period.value || null,
+    project_period: validPeriod,
     confidence_scores: confidenceScores,
     evidence_status: evidenceStatus,
     evidence_quotes: evidenceQuotes,

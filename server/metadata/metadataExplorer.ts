@@ -5,6 +5,7 @@ import {
   ExplorerEvidenceCandidate,
   ToolCallRequest,
   METADATA_MODELS,
+  EvidenceMemoryItem,
 } from './metadataSchemas';
 
 interface ExplorerTurnResult {
@@ -18,6 +19,7 @@ interface ExplorerTurnResult {
  *
  * Iteratively navigates the document using DocumentNavigator tools to locate
  * high-value evidence for all public procurement metadata domains.
+ * Maintains an Evidence Memory of full block texts and table structures.
  */
 export class MetadataExplorer {
   private navigator: DocumentNavigator;
@@ -42,7 +44,19 @@ export class MetadataExplorer {
     let roundsRun = 0;
     let modelUsed: string | undefined;
 
-    // Track all retrieved blocks so far to feed back to the Explorer
+    // Structured Evidence Memory to store substantive text, neighbors, and table rows
+    const evidenceMemory: EvidenceMemoryItem[] = [];
+    const seenItemIds = new Set<string>();
+
+    const addToMemory = (item: EvidenceMemoryItem) => {
+      const key = `${item.source_type}:${item.id}`;
+      if (!seenItemIds.has(key)) {
+        seenItemIds.add(key);
+        evidenceMemory.push(item);
+      }
+    };
+
+    // Track exploration history
     const explorationHistory: Array<{
       round: number;
       tool: string;
@@ -53,9 +67,31 @@ export class MetadataExplorer {
     // Pre-populate initial high-signal context
     const initialOverview = this.navigator.searchBlocks(
       '사업명 과업명 발주기관 수요기관 계약방법 입찰방법 사업예산 사업기간',
-      { limit: 5 }
+      { limit: 6 }
     );
+    initialOverview.forEach((b) => {
+      addToMemory({
+        round: 0,
+        source_type: 'block',
+        id: b.block_id,
+        content: b.text.slice(0, 450),
+        locator: `sec:${b.location?.section_index ?? 0}, p:${b.location?.paragraph_index ?? 0}`,
+        relevance_hint: '문서 개요 자동 탐색',
+      });
+    });
+
     const initialTables = this.navigator.searchTables('사업 개요 예산 금액 기간', 3);
+    initialTables.forEach((t) => {
+      const headerPreview = t.rows.slice(0, 4).map((r) => r.join(' | ')).join('\n');
+      addToMemory({
+        round: 0,
+        source_type: 'table',
+        id: t.table_id,
+        content: `[표: ${t.caption}]\n${headerPreview}`.slice(0, 500),
+        locator: t.table_id,
+        relevance_hint: '초기 주요 표',
+      });
+    });
 
     let currentDossier: ExplorerDossier | null = null;
 
@@ -108,8 +144,14 @@ export class MetadataExplorer {
 
 [절대 주의사항]
 - 존재하지 않는 블록 ID나 원문에 없는 문구를 날조하지 마십시오.
-- 인용(quote)은 도구 결과로 반환된 실제 문단 텍스트의 일부분이어야 합니다.
+- 인용(quote)은 도구 결과 및 [Evidence Memory]로 제공된 실제 문단 텍스트의 일부분이어야 합니다.
 - 조건부 문구(예: "유찰 시 수의계약")와 본계약 입찰방법을 혼동하지 마십시오.`;
+
+      // Format current evidence memory for prompt (most recent up to 15 substantive items)
+      const memorySnippet = evidenceMemory
+        .slice(-16)
+        .map((m) => `[${m.source_type.toUpperCase()} ${m.id}] (${m.relevance_hint || ''})\n${m.content}`)
+        .join('\n\n');
 
       const userPrompt = `[문서 개요]
 제목/파일명: ${options.fileName || '제안요청서'}
@@ -120,20 +162,8 @@ ${outline.sections.slice(0, 15).map((s) => `- ${s.title} (블록 ${s.block_count
 [현재 탐색 라운드: ${round}/${this.maxRounds}]
 ${options.focusQueries ? `[추가 집중 탐색 요구]: ${options.focusQueries.join(', ')}\n` : ''}
 
-[초기 자동 발견 블록 요약]:
-${initialOverview.map((b) => `[${b.block_id}] ${b.text.slice(0, 120)}`).join('\n')}
-
-${
-  initialTables.length > 0
-    ? `[발견된 주요 표]:\n` +
-      initialTables
-        .map(
-          (t) =>
-            `[표 ${t.table_id}: ${t.caption}] 첫 행: ${t.rows[0]?.slice(0, 4).join(' | ')}`
-        )
-        .join('\n')
-    : ''
-}
+[현재까지 수집된 원문 증거 메모리 (Evidence Memory - 실질 원문)]:
+${memorySnippet || '수집된 원문 없음'}
 
 [이전 도구 실행 기록]:
 ${
@@ -142,7 +172,7 @@ ${
     : explorationHistory.map((h) => `- R${h.round} [${h.tool}] (${JSON.stringify(h.args)}): ${h.summary}`).join('\n')
 }
 
-다음 작업을 수행하십시오. 추가 도구 조회가 필요하면 tool_calls를 반환하고, 충분하면 dossier를 완성하십시오.`;
+다음 작업을 수행하십시오. 추가 도구 조회가 필요하면 tool_calls를 반환하고, 6대 도메인에 대한 근거가 충분하면 dossier를 완성하십시오.`;
 
       try {
         const { text, modelUsed: usedModel } = await generateContentWithFallback(
@@ -179,11 +209,66 @@ ${
               toolRes = { error: te?.message || String(te) };
             }
 
+            // Populate rich evidence into Evidence Memory
+            if (Array.isArray(toolRes)) {
+              for (const item of toolRes.slice(0, 6)) {
+                if (item.block_id) {
+                  addToMemory({
+                    round,
+                    source_type: 'block',
+                    id: item.block_id,
+                    content: (item.text || '').slice(0, 450),
+                    locator: item.native_locator
+                      ? `sec:${item.native_locator.section_index}, p:${item.native_locator.paragraph_index}`
+                      : undefined,
+                    relevance_hint: `검색어: "${tc.args?.query || tc.tool}"`,
+                  });
+                } else if (item.table_id) {
+                  const rowsStr = item.rows
+                    ? item.rows.slice(0, 4).map((r: any) => (Array.isArray(r) ? r.join(' | ') : String(r))).join('\n')
+                    : '';
+                  addToMemory({
+                    round,
+                    source_type: 'table',
+                    id: item.table_id,
+                    content: `[표: ${item.caption || ''}]\n${rowsStr}`.slice(0, 450),
+                    locator: item.table_id,
+                    relevance_hint: `표 검색: "${tc.args?.query || ''}"`,
+                  });
+                }
+              }
+            } else if (toolRes && typeof toolRes === 'object') {
+              if (toolRes.block_id && toolRes.text) {
+                addToMemory({
+                  round,
+                  source_type: 'block',
+                  id: toolRes.block_id,
+                  content: toolRes.text.slice(0, 500),
+                  locator: toolRes.native_locator
+                    ? `sec:${toolRes.native_locator.section_index}, p:${toolRes.native_locator.paragraph_index}`
+                    : undefined,
+                  relevance_hint: `도구: ${tc.tool}`,
+                });
+              } else if (toolRes.table_id) {
+                const rowsStr = toolRes.rows
+                  ? toolRes.rows.slice(0, 5).map((r: any) => (Array.isArray(r) ? r.join(' | ') : String(r))).join('\n')
+                  : '';
+                addToMemory({
+                  round,
+                  source_type: 'table',
+                  id: toolRes.table_id,
+                  content: `[표: ${toolRes.caption || ''}]\n${rowsStr}`.slice(0, 500),
+                  locator: toolRes.table_id,
+                  relevance_hint: `도구: ${tc.tool}`,
+                });
+              }
+            }
+
             let summary = '';
             if (Array.isArray(toolRes)) {
-              summary = `${toolRes.length}건 결과. ` + toolRes.slice(0, 2).map((r: any) => `[${r.block_id || r.table_id}] ${(r.text || r.caption || '').slice(0, 60)}`).join('; ');
+              summary = `${toolRes.length}건 검색됨. 상위 항목: ` + toolRes.slice(0, 3).map((r: any) => `[${r.block_id || r.table_id}] ${(r.text || r.caption || '').slice(0, 80)}`).join(' | ');
             } else if (toolRes && typeof toolRes === 'object') {
-              summary = toolRes.text ? `[${toolRes.block_id}] ${toolRes.text.slice(0, 80)}` : JSON.stringify(toolRes).slice(0, 100);
+              summary = toolRes.text ? `[${toolRes.block_id}] ${toolRes.text.slice(0, 100)}` : JSON.stringify(toolRes).slice(0, 120);
             }
 
             explorationHistory.push({

@@ -104,6 +104,15 @@ export interface SpecialistResultsBundle {
   consistency: ConsistencySpecialistResult;
 }
 
+export interface EvidenceMemoryItem {
+  round: number;
+  source_type: 'block' | 'table' | 'neighbors';
+  id: string; // block_id or table_id
+  content: string; // full or substantial text (up to 400-500 chars)
+  locator?: string;
+  relevance_hint?: string;
+}
+
 export interface JudgeDecisionField<T> {
   value: T;
   status: EvidenceStatus;
@@ -127,6 +136,7 @@ export interface JudgeDecisionPayload {
   procurement_method_reason: string;
   budget_amount: JudgeDecisionField<number | null>;
   estimated_price: JudgeDecisionField<number | null>;
+  vat_included?: JudgeDecisionField<boolean | null>;
   calculated_candidates: CalculatedCandidate[];
   project_period: JudgeDecisionField<string | null>;
   judge_summary: string;
@@ -141,6 +151,7 @@ export interface SourceValidationStats {
   rejected_missing_blocks: number;
   demoted_quote_mismatches: number;
   numeric_mismatches_rejected: number;
+  decision_grounding_mismatches: number;
 }
 
 export interface SourceValidationResult {

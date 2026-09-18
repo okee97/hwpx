@@ -41,31 +41,44 @@ export class MetadataJudge {
 [응답 형식 - 반드시 유효한 JSON]
 반드시 JudgeDecisionPayload 스키마에 따라 JSON만 출력하십시오.`;
 
+    // Format dossier evidence for Judge to inspect raw quotes directly
+    const formatDomainEvidence = (candidates: any[]) => {
+      if (!candidates || candidates.length === 0) return '없음';
+      return candidates
+        .map((c) => `  - [${c.block_id}] "${c.quote}" (사유: ${c.reason || ''})`)
+        .join('\n');
+    };
+
+    const dossierSummary = `
+- 사업명 증거:
+${formatDomainEvidence(dossier.project_identity)}
+- 기관(수요/계약) 증거:
+${formatDomainEvidence(dossier.agency)}
+- 예산/가격 증거:
+${formatDomainEvidence(dossier.budget)}
+- 경쟁방법 증거:
+${formatDomainEvidence(dossier.competition_method)}
+- 낙찰방법 증거:
+${formatDomainEvidence(dossier.award_method)}
+- 사업기간 증거:
+${formatDomainEvidence(dossier.period)}
+`.trim();
+
     const userPrompt = `[파일명]: ${fileName || '제안요청서'}
 
-[Specialist 분석 결과 요약]:
-1. 사업명/발주기관:
-   - 사업명: ${specialists.project_agency.project_name.value} (${specialists.project_agency.project_name.status})
-   - 수요기관: ${specialists.project_agency.demand_agency.value}
-   - 계약기관: ${specialists.project_agency.contract_agency.value}
-   - 기관유형: ${specialists.project_agency.client_type.value}
-   - 적용법령: ${specialists.project_agency.governing_law.value}
-2. 계약/입찰방법:
-   - 경쟁방법: ${specialists.procurement.competition_method.value} (${specialists.procurement.competition_method.status})
-   - 낙찰방법: ${specialists.procurement.award_method.value} (${specialists.procurement.award_method.status})
-3. 예산 및 가격:
-   - 사업예산: ${specialists.budget_price.budget_amount.value} (${specialists.budget_price.budget_amount.status})
-   - 추정가격: ${specialists.budget_price.estimated_price.value} (${specialists.budget_price.estimated_price.status})
-   - 참고계산: ${JSON.stringify(specialists.budget_price.calculated_candidates)}
-4. 사업기간:
-   - 기간: ${specialists.period.project_period.value} (${specialists.period.project_period.status})
-5. 정합성 검토 결과:
-   - 충돌 여부: ${specialists.consistency.has_conflicts}
-   - 충돌 내역: ${JSON.stringify(specialists.consistency.detected_conflicts)}
-   - 총평: ${specialists.consistency.consistency_summary}
+[1. Explorer 발굴 원문 증거 (Explorer Dossier)]:
+${dossierSummary}
 
-위 분석관 보고서와 Explorer가 수집한 실제 원문 증거를 바탕으로 최종 메타데이터 판정을 내리십시오.
-JSON 출력:
+[2. 5대 Specialist 전문 분석관 상세 보고서 및 제출 증거]:
+${JSON.stringify(specialists, null, 2)}
+
+[판정 지침]:
+- 각 Specialist가 제시한 결론뿐만 아니라 그들이 제출한 "evidence" 원문 인용구가 실제로 주장을 뒷받침하는지 교차 검증하십시오.
+- Explorer가 수집한 실제 원문과 Specialist 제출 증거를 대조하여 최종 판정을 내리십시오.
+- 입찰방법이 "일반경쟁"인데 "제한경쟁"으로 오분류되었거나, "유찰 시 수의계약" 같은 조건부 문구를 본계약 방식으로 오판정한 경우 교정하십시오.
+- "추정가격"은 문서 원문에 명시적 표제어("추정가격")와 함께 기재된 경우에만 인정하고, 없으면 반드시 null로 판정하십시오.
+
+JSON 출력 형식:
 {
   "project_name": { "value": "...", "status": "EXPLICIT" | "UNVERIFIED", "evidence": [{ "block_id": "...", "quote": "..." }], "reasoning_summary": "..." },
   "client_name": { "value": "...", "status": "EXPLICIT" | "UNVERIFIED", "evidence": [{ "block_id": "...", "quote": "..." }], "reasoning_summary": "..." },
@@ -78,6 +91,7 @@ JSON 출력:
   "procurement_method_reason": "경쟁방법 및 낙찰방법 종합 판정 사유",
   "budget_amount": { "value": 1500000000, "status": "EXPLICIT", "evidence": [{ "block_id": "...", "quote": "..." }], "reasoning_summary": "..." },
   "estimated_price": { "value": null, "status": "UNVERIFIED", "evidence": [], "reasoning_summary": "..." },
+  "vat_included": { "value": true, "status": "EXPLICIT", "evidence": [], "reasoning_summary": "..." },
   "calculated_candidates": [...],
   "project_period": { "value": "착수일로부터 8개월", "status": "EXPLICIT", "evidence": [{ "block_id": "...", "quote": "..." }], "reasoning_summary": "..." },
   "judge_summary": "AI Judge 종합 검증 의견",
@@ -133,6 +147,7 @@ JSON 출력:
       procurement_method_reason: `${pr.competition_method.value} 및 ${pr.award_method.value} (Specialist 종합 판정)`,
       budget_amount: bp.budget_amount,
       estimated_price: bp.estimated_price,
+      vat_included: bp.vat_included,
       calculated_candidates: bp.calculated_candidates,
       project_period: pe.project_period,
       judge_summary: specialists.consistency.consistency_summary || '도메인 분석관 종합 판정',

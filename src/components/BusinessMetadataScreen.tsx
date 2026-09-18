@@ -113,6 +113,11 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
   const [projectPeriod, setProjectPeriod] = useState(
     initialAuthoritative?.project_period || initialExtracted?.project_period || ''
   );
+  const [vatIncluded, setVatIncluded] = useState<boolean | null>(
+    initialAuthoritative?.vat_included !== undefined
+      ? initialAuthoritative.vat_included
+      : (initialExtracted?.vat_included !== undefined ? initialExtracted.vat_included : true)
+  );
   const [note, setNote] = useState(initialAuthoritative?.note || '');
 
   // Sync state on mount/props
@@ -177,7 +182,8 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
   const populateForm = (data: AuthoritativeMetadata) => {
     setProjectName(data.project_name || projectNameDefault || '');
     setClientName(data.client_name || '');
-    setDemandAgency(data.client_name || '');
+    setDemandAgency(data.demand_agency || data.client_name || '');
+    setContractAgency(data.contract_agency || '');
     setClientType(data.client_type || 'UNKNOWN');
     setGoverningLaw(data.governing_law || 'UNKNOWN');
     setCompetitionMethod(data.competition_method || 'UNKNOWN');
@@ -185,6 +191,7 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
     setProcurementMethod(data.procurement_method || 'UNKNOWN');
     setBudgetAmount(data.budget_amount && data.budget_amount > 0 ? data.budget_amount : '');
     setEstimatedPrice(data.estimated_price && data.estimated_price > 0 ? data.estimated_price : '');
+    setVatIncluded(data.vat_included !== undefined ? data.vat_included : true);
     setProjectPeriod(data.project_period || '');
     setNote(data.note || '');
   };
@@ -201,6 +208,7 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
     setProcurementMethod(data.procurement_method || 'UNKNOWN');
     setBudgetAmount(data.budget_amount && data.budget_amount > 0 ? data.budget_amount : '');
     setEstimatedPrice(data.estimated_price && data.estimated_price > 0 ? data.estimated_price : '');
+    setVatIncluded(data.vat_included !== undefined ? data.vat_included : true);
     setProjectPeriod(data.project_period || '');
   };
 
@@ -281,6 +289,8 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
     const updatePayload: AuthoritativeMetadataUpdateDto = {
       project_name: projectName || '공공 정보화 사업',
       client_name: clientName || '',
+      demand_agency: demandAgency || clientName || '',
+      contract_agency: contractAgency || null,
       client_type: clientType,
       governing_law: governingLaw,
       procurement_method: derivedProc,
@@ -288,6 +298,7 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
       award_method: awardMethod,
       budget_amount: parsedBudget,
       estimated_price: parsedEstimated,
+      vat_included: vatIncluded,
       project_period: projectPeriod || null,
       confirmed_by: 'user_officer',
       note: note || '사업정보 확인 완료',
@@ -850,6 +861,30 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
                   <span className="text-slate-400 font-sans text-[11px]">미입력 시 예산 관련 검증은 유예됩니다.</span>
                 )}
               </p>
+              {/* VAT Included Toggle */}
+              <div className="mt-2 flex items-center gap-3 text-xs text-slate-700">
+                <span className="font-semibold text-slate-600">부가세:</span>
+                <label className="flex items-center gap-1 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="vatIncluded"
+                    checked={vatIncluded === true}
+                    onChange={() => setVatIncluded(true)}
+                    className="text-blue-600 focus:ring-blue-500"
+                  />
+                  <span>포함 (기본)</span>
+                </label>
+                <label className="flex items-center gap-1 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="vatIncluded"
+                    checked={vatIncluded === false}
+                    onChange={() => setVatIncluded(false)}
+                    className="text-blue-600 focus:ring-blue-500"
+                  />
+                  <span>별도</span>
+                </label>
+              </div>
             </div>
 
             <div>
@@ -988,10 +1023,11 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
                   </span>
                 </div>
                 <div className="text-slate-600 space-y-0.5 text-[11px]">
-                  <div>수요기관: <strong>{extracted?.client_name || '미감지'}</strong></div>
+                  <div>수요기관: <strong>{extracted?.demand_agency || extracted?.client_name || '미감지'}</strong></div>
+                  {extracted?.contract_agency && <div>계약기관: <strong className="text-blue-700">{extracted.contract_agency}</strong></div>}
                   <div>경쟁방법: <strong>{COMPETITION_METHOD_LABELS[extracted?.competition_method || 'UNKNOWN']?.label}</strong></div>
                   <div>낙찰방법: <strong>{AWARD_METHOD_LABELS[extracted?.award_method || 'UNKNOWN']?.label}</strong></div>
-                  <div>사업예산: {extracted?.budget_amount ? `${Number(extracted.budget_amount).toLocaleString()}원` : '문서 미기재'}</div>
+                  <div>사업예산: {extracted?.budget_amount ? `${Number(extracted.budget_amount).toLocaleString()}원 (${extracted?.vat_included !== false ? '부가세 포함' : '부가세 별도'})` : '문서 미기재'}</div>
                   <div>사업기간: {extracted?.project_period || '문서 미기재'}</div>
                   <div>엔진: <span className="text-indigo-700 font-semibold">{extracted?.analysis_engine === 'AI' ? (extracted.model_used || 'Gemini AI') : '규칙 엔진'}</span></div>
                 </div>
@@ -1006,11 +1042,12 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
                   </span>
                 </div>
                 <div className="text-slate-600 space-y-0.5 text-[11px]">
-                  <div>확정기관: <strong>{authoritative?.client_name || clientName || '미지정'}</strong></div>
+                  <div>수요기관: <strong>{authoritative?.demand_agency || authoritative?.client_name || clientName || '미지정'}</strong></div>
+                  {authoritative?.contract_agency && <div>계약기관: <strong className="text-emerald-800">{authoritative.contract_agency}</strong></div>}
                   <div>확정경쟁: <strong>{COMPETITION_METHOD_LABELS[authoritative?.competition_method || competitionMethod]?.label}</strong></div>
                   <div>확정낙찰: <strong>{AWARD_METHOD_LABELS[authoritative?.award_method || awardMethod]?.label}</strong></div>
                   <div>확정법령: <strong className="text-emerald-800">{GOVERNING_LAW_LABELS[authoritative?.governing_law || governingLaw]?.short}</strong></div>
-                  <div>확정예산: {authoritative?.budget_amount ? `${Number(authoritative.budget_amount).toLocaleString()}원` : '미기재 (유예)'}</div>
+                  <div>확정예산: {authoritative?.budget_amount ? `${Number(authoritative.budget_amount).toLocaleString()}원 (${authoritative?.vat_included !== false ? '부가세 포함' : '부가세 별도'})` : '미기재 (유예)'}</div>
                   <div>확정자: {authoritative?.confirmed_by || 'user_officer'}</div>
                   <div className="text-slate-400 font-mono text-[10px]">
                     {authoritative?.updated_at ? new Date(authoritative.updated_at).toLocaleString() : '미확정'}
