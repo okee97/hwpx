@@ -50,10 +50,18 @@ export type ProcurementMethod =
   | 'PRIVATE_CONTRACT'
   | 'UNKNOWN';
 
+export interface CalculatedCandidate {
+  label: string;
+  amount: number;
+  note: string;
+}
+
 export interface ExtractedMetadata {
   project_id: string;
   project_name?: string | null;
   client_name?: string | null;
+  demand_agency?: string | null;     // 수요기관/발주처 (예: ○○부, ○○구청)
+  contract_agency?: string | null;   // 계약기관/조달기관 (예: 조달청, 자체계약)
   client_type: ClientType;
   governing_law: GoverningLaw;
   procurement_method: ProcurementMethod; // 하위 호환 필드
@@ -67,6 +75,7 @@ export interface ExtractedMetadata {
   fallback_used?: boolean;
   budget_amount?: number | null;
   estimated_price?: number | null;
+  calculated_candidates?: CalculatedCandidate[]; // 자동 덮어쓰지 않는 참고 계산값 (예: 총사업예산 ÷ 1.1)
   derived_estimated_price?: number | null;
   derivation_note?: string | null;
   requires_user_confirmation?: boolean;

@@ -64,6 +64,14 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
   const [clientName, setClientName] = useState(
     initialAuthoritative?.client_name || initialExtracted?.client_name || ''
   );
+  const [demandAgency, setDemandAgency] = useState(
+    initialExtracted?.demand_agency || initialAuthoritative?.client_name || initialExtracted?.client_name || ''
+  );
+  const [contractAgency, setContractAgency] = useState(
+    initialExtracted?.contract_agency || ''
+  );
+  const [reviewPlan, setReviewPlan] = useState<any | null>(null);
+  const [isLoadingPlan, setIsLoadingPlan] = useState(false);
   const [clientType, setClientType] = useState<ClientType>(
     initialAuthoritative?.client_type || initialExtracted?.client_type || 'UNKNOWN'
   );
@@ -143,6 +151,22 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
         populateFormFromExtracted(extData);
         setHasAutoPopulated(true);
       }
+
+      // Fetch AI Review Plan
+      try {
+        setIsLoadingPlan(true);
+        const planRes = await fetch(`/api/v1/projects/${projectId}/review-plan`);
+        if (planRes.ok) {
+          const planJson = await planRes.json();
+          if (planJson.data) {
+            setReviewPlan(planJson.data);
+          }
+        }
+      } catch (pe) {
+        console.warn('Failed to load review plan:', pe);
+      } finally {
+        setIsLoadingPlan(false);
+      }
     } catch (e) {
       console.warn('Failed to load metadata:', e);
     } finally {
@@ -153,6 +177,7 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
   const populateForm = (data: AuthoritativeMetadata) => {
     setProjectName(data.project_name || projectNameDefault || '');
     setClientName(data.client_name || '');
+    setDemandAgency(data.client_name || '');
     setClientType(data.client_type || 'UNKNOWN');
     setGoverningLaw(data.governing_law || 'UNKNOWN');
     setCompetitionMethod(data.competition_method || 'UNKNOWN');
@@ -166,7 +191,9 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
 
   const populateFormFromExtracted = (data: ExtractedMetadata) => {
     setProjectName(data.project_name || projectNameDefault || '');
-    setClientName(data.client_name || '');
+    setClientName(data.client_name || data.demand_agency || '');
+    setDemandAgency(data.demand_agency || data.client_name || '');
+    setContractAgency(data.contract_agency || '');
     setClientType(data.client_type || 'UNKNOWN');
     setGoverningLaw(data.governing_law || 'UNKNOWN');
     setCompetitionMethod(data.competition_method || 'UNKNOWN');
@@ -503,25 +530,47 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
             />
           </div>
 
-          {/* Field 2 & 3: Demand Agency & Agency Type */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {/* Field 2 & 2-1: Demand Agency & Contract Agency */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <label className="text-xs font-bold text-slate-700">
-                  수요기관명 (발주처)
+                  수요기관 (실사용 / 발주부서)
                 </label>
                 {renderEvidenceBadge('client_name')}
               </div>
               <input
                 type="text"
                 value={clientName}
-                onChange={(e) => setClientName(e.target.value)}
+                onChange={(e) => {
+                  setClientName(e.target.value);
+                  setDemandAgency(e.target.value);
+                }}
                 required
                 className="w-full px-3.5 py-2 rounded-lg border border-slate-300 text-sm font-medium text-slate-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
                 placeholder="예: 서울특별시 강남구"
               />
               <p className="mt-1 text-[11px] text-slate-500">
-                AI 참조: <code>{extracted?.source_references?.client_name || 'para_1'}</code> 문단
+                과업의 실수요자/발주부서
+              </p>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs font-bold text-slate-700">
+                  계약/공고기관 (조달 주체)
+                </label>
+                <span className="text-[10px] text-slate-400">자체계약 / 조달청</span>
+              </div>
+              <input
+                type="text"
+                value={contractAgency}
+                onChange={(e) => setContractAgency(e.target.value)}
+                className="w-full px-3.5 py-2 rounded-lg border border-slate-300 text-sm font-medium text-slate-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
+                placeholder="예: 조달청 (또는 자체발주)"
+              />
+              <p className="mt-1 text-[11px] text-slate-500">
+                입찰 공고 및 계약 체결 기관
               </p>
             </div>
 
@@ -752,13 +801,45 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
                 {estimatedPrice !== '' && Number(estimatedPrice) > 0 ? (
                   `₩ ${Number(estimatedPrice).toLocaleString()} 원`
                 ) : (
-                  <span className="text-slate-400 font-sans text-[11px]">미기재</span>
+                  <span className="text-slate-400 font-sans text-[11px]">미기재 (강제 계산값 대입 금지됨)</span>
                 )}
               </p>
               {extracted?.derivation_note && (
                 <p className="mt-1 text-[11px] text-indigo-600 bg-indigo-50/70 px-2 py-0.5 rounded border border-indigo-100">
                   💡 {extracted.derivation_note}
                 </p>
+              )}
+
+              {/* Calculated Candidates (e.g. Budget / 1.1) */}
+              {extracted?.calculated_candidates && extracted.calculated_candidates.length > 0 && (
+                <div className="mt-2.5 p-2.5 rounded-lg bg-indigo-50/90 border border-indigo-200 text-xs text-indigo-950 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-indigo-900 flex items-center gap-1.5 text-[11px]">
+                      <Sparkles className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                      참고 계산 후보값 (공급가액 역산 등)
+                    </span>
+                    <span className="text-[10px] text-indigo-600 bg-indigo-100/80 px-1.5 py-0.5 rounded">참고용</span>
+                  </div>
+                  {extracted.calculated_candidates.map((cand, cIdx) => (
+                    <div key={cIdx} className="flex items-center justify-between pt-1 border-t border-indigo-100 text-[11px]">
+                      <div>
+                        <div className="font-medium text-slate-800">{cand.label}</div>
+                        <div className="text-slate-500 text-[10px]">{cand.note}</div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="font-mono font-bold text-indigo-700">₩ {cand.amount.toLocaleString()}원</span>
+                        <button
+                          type="button"
+                          onClick={() => setEstimatedPrice(cand.amount)}
+                          className="px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-700 text-white text-[10px] font-bold transition shadow-2xs"
+                          title="이 계산값을 추정가격 입력란에 반영합니다."
+                        >
+                          반영
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           </div>
@@ -896,6 +977,67 @@ export const BusinessMetadataScreen: React.FC<BusinessMetadataScreenProps> = ({
                 <span className="text-slate-600">문서에 기재되지 않음 (담당자 직접 입력 필요)</span>
               </div>
             </div>
+          </div>
+
+          {/* Review Plan Status Card (AI 구매검토관 자율 계획) */}
+          <div className="bg-white rounded-2xl border border-indigo-200 p-5 shadow-xs space-y-3">
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-bold text-indigo-950 flex items-center gap-1.5 uppercase tracking-wider">
+                <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                AI 맞춤형 검토 계획 (Review Plan)
+              </h4>
+              {isLoadingPlan && <RefreshCw className="w-3 h-3 text-indigo-500 animate-spin" />}
+            </div>
+
+            {reviewPlan ? (
+              <div className="space-y-2.5 text-xs">
+                <div className="p-2.5 rounded-lg bg-indigo-50/70 border border-indigo-100">
+                  <div className="text-[11px] font-bold text-indigo-900 mb-0.5">
+                    {reviewPlan.project_type_classification}
+                  </div>
+                  <div className="text-[10px] text-slate-600">
+                    전체 {reviewPlan.focus_areas?.length || 0}대 핵심 영역 맞춤 검토 설계 완료
+                  </div>
+                </div>
+
+                {/* Priority Areas */}
+                <div className="space-y-1.5 pt-1">
+                  <div className="text-[11px] font-semibold text-slate-700">중점 검토 영역 및 우선순위:</div>
+                  <div className="space-y-1">
+                    {reviewPlan.focus_areas?.slice(0, 4).map((fa: any, fIdx: number) => (
+                      <div key={fIdx} className="flex items-start justify-between text-[11px] p-1.5 rounded bg-slate-50 border border-slate-200">
+                        <div className="pr-2">
+                          <span className="font-medium text-slate-800">{fa.area_name}</span>
+                          <div className="text-[10px] text-slate-500 leading-tight mt-0.5">{fa.rationale}</div>
+                        </div>
+                        <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold shrink-0 ${
+                          fa.priority === 'HIGH' ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
+                        }`}>
+                          {fa.priority}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Risk Profile Highlights */}
+                {reviewPlan.risk_profile && (
+                  <div className="p-2 rounded bg-amber-50/80 border border-amber-200 text-[10px] text-amber-900 space-y-0.5">
+                    <div className="font-bold flex items-center gap-1">
+                      <AlertTriangle className="w-3 h-3 text-amber-600" />
+                      주요 위험 프로파일
+                    </div>
+                    <div>법령 정합성: {reviewPlan.risk_profile.statute_violation_risk}</div>
+                    <div>공정성/참가자격: {reviewPlan.risk_profile.fairness_barrier_risk}</div>
+                    <div>지재권/보안: {reviewPlan.risk_profile.ip_security_risk}</div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-[11px] text-slate-500">
+                사업정보 확정 시 Document Navigator가 문서를 탐색하여 맞춤형 Review Plan을 즉시 수립합니다.
+              </p>
+            )}
           </div>
 
           {/* Quick Preset Testing Card */}

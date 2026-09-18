@@ -48,6 +48,8 @@ export const ReviewFindingsDashboard: React.FC<ReviewFindingsDashboardProps> = (
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [pipelineStage, setPipelineStage] = useState<string | null>(null);
   const [lastPipelineSummary, setLastPipelineSummary] = useState<ReviewPipelineResponse | null>(null);
+  const [criticSummary, setCriticSummary] = useState<string | null>(null);
+  const [reviewPlan, setReviewPlan] = useState<any | null>(null);
 
   // 필터 상태 (4개 카테고리 탭 + 검토 상태 필터)
   const [categoryFilter, setCategoryFilter] = useState<CategoryTabFilter>('ALL');
@@ -157,12 +159,18 @@ export const ReviewFindingsDashboard: React.FC<ReviewFindingsDashboardProps> = (
 
       const json = await res.json();
       if (json.success && json.data) {
-        const pipelineData: ReviewPipelineResponse = json.data;
+        const pipelineData = json.data;
         setLastPipelineSummary(pipelineData);
         setFindings(pipelineData.findings || []);
+        if (pipelineData.critic_summary) {
+          setCriticSummary(pipelineData.critic_summary);
+        }
+        if (pipelineData.review_plan) {
+          setReviewPlan(pipelineData.review_plan);
+        }
 
         showNotice(
-          `AI 종합 검토 파이프라인 완료! (총 ${pipelineData.total_findings}건 유효 판정, 중복 ${pipelineData.merged_count}건 병합, 검증 ${pipelineData.filtered_by_validator_count}건 제외)`,
+          `AI 구매검토관 v3 자율 검토 완료! (총 ${pipelineData.total_findings || pipelineData.findings?.length || 0}건 도출 및 수석 비평관 엄격 검증 완료)`,
           'success'
         );
       }
@@ -483,6 +491,64 @@ export const ReviewFindingsDashboard: React.FC<ReviewFindingsDashboardProps> = (
           </div>
         )}
 
+        {/* AI 구매검토관 v3: 맞춤형 Review Plan & 수석 비평관(Final Critic) 요약 배너 */}
+        {(criticSummary || reviewPlan) && (
+          <div className="mt-4 p-4 rounded-xl bg-gradient-to-r from-indigo-50/90 to-purple-50/70 border border-indigo-200 text-xs space-y-3 shadow-2xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="font-bold text-indigo-950 flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-indigo-600 shrink-0" />
+                <span>AI 구매검토관 v3 심층 자율 검토 결과 보고</span>
+                {reviewPlan && (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                    {reviewPlan.project_type_classification || '맞춤형 계획 가동'}
+                  </span>
+                )}
+              </div>
+              <span className="text-[10px] text-indigo-700 font-mono">
+                Document Navigator 자율 탐색 + 8대 전문영역 + 수석 비평관 필터링 완료
+              </span>
+            </div>
+
+            {/* Final Critic Summary */}
+            {criticSummary && (
+              <div className="p-3 rounded-lg bg-white/90 border border-indigo-100 space-y-1">
+                <div className="text-[11px] font-bold text-slate-800 flex items-center gap-1.5">
+                  <Scale className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>수석 비평관(Final Critic) 종합 평가 및 필터링 의견:</span>
+                </div>
+                <p className="text-slate-700 text-[11px] leading-relaxed whitespace-pre-wrap pl-5">
+                  {criticSummary}
+                </p>
+              </div>
+            )}
+
+            {/* Review Plan Focus Areas Summary */}
+            {reviewPlan?.focus_areas && reviewPlan.focus_areas.length > 0 && (
+              <div className="pt-1">
+                <div className="text-[11px] font-semibold text-slate-700 mb-1.5">
+                  자율 탐색 및 정밀 점검이 수행된 주요 과업 영역:
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {reviewPlan.focus_areas.map((fa: any, idx: number) => (
+                    <span
+                      key={idx}
+                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[10px] font-medium border ${
+                        fa.priority === 'HIGH'
+                          ? 'bg-rose-50 text-rose-800 border-rose-200 font-bold'
+                          : 'bg-white text-slate-700 border-slate-200'
+                      }`}
+                      title={fa.rationale}
+                    >
+                      <span>{fa.area_name}</span>
+                      <span className="text-[9px] opacity-75">({fa.priority})</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* 파이프라인 아키텍처 다이어그램 & 실행 요약 */}
         {lastPipelineSummary && (
           <div className="mt-4 p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs">
@@ -492,7 +558,7 @@ export const ReviewFindingsDashboard: React.FC<ReviewFindingsDashboardProps> = (
                 <span>AI 파이프라인 단계별 처리 현황</span>
               </span>
               <span className="text-slate-500 text-[11px]">
-                실행 시각: {new Date(lastPipelineSummary.executed_at).toLocaleTimeString()}
+                실행 시각: {lastPipelineSummary.executed_at ? new Date(lastPipelineSummary.executed_at).toLocaleTimeString() : '방금 전'}
               </span>
             </div>
 
@@ -500,25 +566,25 @@ export const ReviewFindingsDashboard: React.FC<ReviewFindingsDashboardProps> = (
               <div className="bg-white p-2.5 rounded-lg border border-slate-200">
                 <span className="text-slate-500 block text-[11px]">1. Rule Engine</span>
                 <span className="text-sm font-bold text-slate-800">
-                  {lastPipelineSummary.stage_counts.rule_findings}건 검출
+                  {lastPipelineSummary.stage_counts?.rule_findings ?? 0}건 검출
                 </span>
               </div>
               <div className="bg-white p-2.5 rounded-lg border border-purple-200">
                 <span className="text-purple-700 block text-[11px]">2. Fairness Agent</span>
                 <span className="text-sm font-bold text-purple-900">
-                  {lastPipelineSummary.stage_counts.fairness_findings}건 검출
+                  {lastPipelineSummary.stage_counts?.fairness_findings ?? 0}건 검출
                 </span>
               </div>
               <div className="bg-white p-2.5 rounded-lg border border-cyan-200">
-                <span className="text-cyan-700 block text-[11px]">3. General Review</span>
+                <span className="text-cyan-700 block text-[11px]">3. Specialist Review</span>
                 <span className="text-sm font-bold text-cyan-900">
-                  {lastPipelineSummary.stage_counts.general_findings}건 검출
+                  {lastPipelineSummary.stage_counts?.general_findings ?? (lastPipelineSummary.findings?.length ?? 0)}건 검출
                 </span>
               </div>
               <div className="bg-white p-2.5 rounded-lg border border-indigo-200">
                 <span className="text-indigo-700 block text-[11px]">4. Result Merger</span>
                 <span className="text-sm font-bold text-indigo-900">
-                  중복 {lastPipelineSummary.merged_count}건 병합 (최종 {lastPipelineSummary.total_findings}건)
+                  {lastPipelineSummary.merged_count ? `중복 ${lastPipelineSummary.merged_count}건 병합 ` : ''}(최종 {lastPipelineSummary.total_findings ?? lastPipelineSummary.findings?.length ?? 0}건)
                 </span>
               </div>
             </div>

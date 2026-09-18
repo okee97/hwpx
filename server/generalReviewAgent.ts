@@ -57,8 +57,8 @@ JSON 배열 형식으로만 응답하십시오.`;
       const userContent = `[확정 사업정보]
 - 사업명: ${authoritativeMetadata?.project_name || '정보화 사업'}
 - 수요기관: ${authoritativeMetadata?.client_name || '수요기관'}
-- 사업예산: ${authoritativeMetadata?.budget_amount || '미정'}원
-- 사업기간: ${authoritativeMetadata?.project_period || '8개월'}
+- 사업예산: ${authoritativeMetadata?.budget_amount ? authoritativeMetadata.budget_amount.toLocaleString() + '원' : '문서 미기재 (임의가정 금지)'}
+- 사업기간: ${authoritativeMetadata?.project_period || '문서 미기재 (임의가정 금지)'}
 
 [문서 블록 목록]
 ${blocks
@@ -69,7 +69,8 @@ ${blocks
 [검토 요청]
 1. 사업 개요의 기간/예산과 세부 과업 일정/내역 간의 모순 검토
 2. 과업에 명시된 요구사항 대비 제출 산출물 목록의 누락 여부
-3. 제안서 제출 기한, 하자담보 책임기간, 기술지원 조건의 명확성 검토`;
+3. 제안서 제출 기한, 하자담보 책임기간, 기술지원 조건의 명확성 검토
+4. 주의: 문서에 명시되지 않은 가상의 기간이나 숫자를 가정하여 모순을 조작하지 마십시오.`;
 
       const result = await generateContentWithFallback({
         contents: [{ role: 'user', parts: [{ text: `${systemPrompt}\n\n${userContent}` }] }],
@@ -86,10 +87,10 @@ ${blocks
       }
     } catch (err: any) {
       const msg = err?.message || String(err);
-      if (msg.includes('API_KEY_INVALID') || msg.includes('API key not valid')) {
-        console.warn('[Gemini General Review Agent] API key not valid; using domain heuristic engine.');
+      if (msg.includes('API_KEY') || msg.includes('API key not valid')) {
+        console.log('[Gemini General Review Agent] API 키 미연동/비활성 상태로 도메인 휴리스틱 엔진을 사용합니다.');
       } else {
-        console.warn('[Gemini General Review Agent] Using domain heuristic engine:', msg.slice(0, 120));
+        console.log('[Gemini General Review Agent] 도메인 휴리스틱 엔진 적용:', msg.slice(0, 80));
       }
     }
 
@@ -238,23 +239,6 @@ function runHeuristicGeneralReview(
     }
   }
 
-  // If none matched, provide a standard RFP completeness check item based on blocks
-  if (results.length === 0 && blocks.length > 2) {
-    const candidateBlock = blocks[1] || blocks[0];
-    results.push({
-      rule_id: 'AI-COMPLETENESS-001',
-      rule_name: '제안요청서 완결성 점검',
-      title: '제안서 평가 배점표 및 기술점수 산정 산식 명시성 검토',
-      block_id: candidateBlock.block_id,
-      matched_keyword: candidateBlock.text.slice(0, 15),
-      original_text: candidateBlock.text,
-      basis:
-        '공공 소프트웨어 제안요청서의 완결성을 위해 기술평가(90%)와 가격평가(10%)의 세부 배점 기준표 및 차등점수제 적용 여부가 본문에 누락되지 않았는지 최종 확인이 필요합니다.',
-      recommendation:
-        '기획재정부 계약예규 협상에 의한 계약체결기준 제7조에 따른 세부 기술성 평가항목 및 정량·정성 배점표가 첨부 서식에 온전히 포함되어 있는지 확인하십시오.',
-      severity: 'INFO',
-    });
-  }
-
+  // Strictly respect ground truth: If no issues found, return empty array without fabricating findings
   return results;
 }

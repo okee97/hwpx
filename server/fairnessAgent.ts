@@ -99,10 +99,10 @@ ${blocks
       }
     } catch (err: any) {
       const msg = err?.message || String(err);
-      if (msg.includes('API_KEY_INVALID') || msg.includes('API key not valid')) {
-        console.warn('[Gemini Fairness Agent] API key not valid; using domain heuristic engine.');
+      if (msg.includes('API_KEY') || msg.includes('API key not valid')) {
+        console.log('[Gemini Fairness Agent] API 키 미연동/비활성 상태로 도메인 휴리스틱 엔진을 사용합니다.');
       } else {
-        console.warn('[Gemini Fairness Agent] Using domain heuristic engine:', msg.slice(0, 120));
+        console.log('[Gemini Fairness Agent] 도메인 휴리스틱 엔진 적용:', msg.slice(0, 80));
       }
     }
 

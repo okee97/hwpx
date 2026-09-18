@@ -22,12 +22,28 @@ export interface RhwpParseExecutionResult {
   };
 }
 
+export interface TableMatrix {
+  table_id: string;
+  caption?: string;
+  rows: string[][];
+}
+
 let cachedCapabilities: RhwpCapabilities | null = null;
 let lastProbeTime = 0;
 const PROBE_CACHE_TTL_MS = 60000;
 
 export function getRhwpCliPath(): string {
-  return process.env.RHWP_CLI_PATH || '/usr/local/bin/rhwp';
+  if (process.env.RHWP_CLI_PATH && fs.existsSync(process.env.RHWP_CLI_PATH)) {
+    return process.env.RHWP_CLI_PATH;
+  }
+  if (fs.existsSync('/usr/local/bin/rhwp')) {
+    return '/usr/local/bin/rhwp';
+  }
+  const localShim = path.join(process.cwd(), 'scripts', 'rhwp_cli.py');
+  if (fs.existsSync(localShim)) {
+    return localShim;
+  }
+  return '/usr/local/bin/rhwp';
 }
 
 /**

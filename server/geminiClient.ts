@@ -3,6 +3,8 @@ import { GoogleGenAI } from '@google/genai';
 let geminiClient: GoogleGenAI | null = null;
 let lastUsedKey: string | null = null;
 let knownInvalidApiKey: string | null = null;
+let isValidatedUsable: boolean | null = null;
+let keyValidationPromise: Promise<boolean> | null = null;
 const modelUnhealthyUntil: Record<string, number> = {};
 
 export function isGeminiKeyConfigured(): boolean {
@@ -21,7 +23,82 @@ export function isGeminiKeyConfigured(): boolean {
   if (knownInvalidApiKey && knownInvalidApiKey === key) {
     return false;
   }
+  if (isValidatedUsable === false && lastUsedKey === key) {
+    return false;
+  }
   return true;
+}
+
+/**
+ * Asynchronously verifies if the configured GEMINI_API_KEY is accepted by Google GenAI.
+ * Returns true if valid, false if revoked/invalid/unauthorized.
+ */
+export async function verifyGeminiApiKey(): Promise<boolean> {
+  const rawKey = process.env.GEMINI_API_KEY;
+  if (!rawKey) return false;
+  const cleanKey = rawKey.trim().replace(/^["']|["']$/g, '');
+
+  if (lastUsedKey === cleanKey && isValidatedUsable !== null) {
+    return isValidatedUsable;
+  }
+  if (keyValidationPromise) {
+    return keyValidationPromise;
+  }
+
+  keyValidationPromise = (async () => {
+    try {
+      const client = new GoogleGenAI({
+        apiKey: cleanKey,
+        httpOptions: {
+          headers: { 'User-Agent': 'aistudio-build' },
+        },
+      });
+
+      const probeCall = client.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: [{ role: 'user', parts: [{ text: '1' }] }],
+      });
+      probeCall.catch(() => {});
+
+      let timer: NodeJS.Timeout | null = null;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('TIMEOUT')), 3500);
+      });
+
+      await Promise.race([probeCall, timeoutPromise]);
+      if (timer) clearTimeout(timer);
+
+      isValidatedUsable = true;
+      lastUsedKey = cleanKey;
+      return true;
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      if (
+        msg.includes('API_KEY_INVALID') ||
+        msg.includes('API key not valid') ||
+        msg.includes('PERMISSION_DENIED') ||
+        err?.status === 400 ||
+        err?.status === 403
+      ) {
+        knownInvalidApiKey = cleanKey;
+        isValidatedUsable = false;
+        lastUsedKey = cleanKey;
+        console.log('[GeminiClient] Configured GEMINI_API_KEY is invalid/unauthorized. Heuristic & rule-based engine will be used automatically.');
+        return false;
+      }
+      // If temporary timeout or 503, don't permanently invalidate
+      return true;
+    } finally {
+      keyValidationPromise = null;
+    }
+  })();
+
+  return keyValidationPromise;
+}
+
+// Proactively test key in background
+if (process.env.GEMINI_API_KEY) {
+  verifyGeminiApiKey().catch(() => {});
 }
 
 export function getGeminiClient(): GoogleGenAI | null {
@@ -116,14 +193,17 @@ export async function generateContentWithFallback(
       if (
         errMsg.includes('API_KEY_INVALID') ||
         errMsg.includes('API key not valid') ||
-        errMsg.includes('PERMISSION_DENIED')
+        errMsg.includes('PERMISSION_DENIED') ||
+        err?.status === 400 ||
+        err?.status === 403
       ) {
         if (lastUsedKey) {
           knownInvalidApiKey = lastUsedKey;
+          isValidatedUsable = false;
         }
         geminiClient = null;
-        console.warn('[GeminiClient] API key invalid or unauthorized; using rule-based/heuristic fallbacks.');
-        throw err;
+        console.log('[GeminiClient] GEMINI_API_KEY is invalid or unauthorized; using rule-based/heuristic fallbacks.');
+        throw new Error('GEMINI_API_KEY_INVALID: API key is invalid or unauthorized.');
       }
 
       const isTransientOrUnavailable =

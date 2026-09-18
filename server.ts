@@ -4,8 +4,11 @@ import fs from 'fs';
 import { spawn, execFile } from 'child_process';
 import multer from 'multer';
 import { createServer as createViteServer } from 'vite';
-import { orchestrateReviewPipeline } from './server/reviewOrchestrator';
-import { extractMetadataWithGemini, extractMetadataRuleBasedFallback } from './server/metadataExtractor';
+import { executeAutonomousReview } from './server/reviewOrchestrator';
+import { extractMetadataWithGemini } from './server/metadataExtractor';
+import { buildDocumentIndex, DocumentNavigator } from './server/documentNavigator';
+import { generateReviewPlan, ReviewPlan } from './server/reviewPlanner';
+import { TableMatrix } from './server/rhwpAdapter';
 import {
   Finding,
   DocumentBlock,
@@ -175,6 +178,7 @@ const parsedDocCache: Map<
   string,
   {
     blocks: DocumentBlock[];
+    tables?: TableMatrix[];
     rawText: string;
     fileName: string;
     fileSize?: number;
@@ -183,6 +187,9 @@ const parsedDocCache: Map<
     executionInfo?: any;
   }
 > = new Map();
+
+// In-memory store for AI Review Plans tailored to project context
+const reviewPlanStore: Map<string, ReviewPlan> = new Map();
 
 const loadMetadataFromDisk = () => {
   try {
@@ -291,12 +298,47 @@ const extractBlocksFromParsed = (parsedJson: any): DocumentBlock[] => {
   return blocks;
 };
 
+const extractTablesFromParsed = (parsedJson: any): TableMatrix[] => {
+  const tables: TableMatrix[] = [];
+  if (parsedJson?.tables && Array.isArray(parsedJson.tables)) {
+    return parsedJson.tables;
+  }
+  if (parsedJson?.sections && parsedJson.sections.length > 0) {
+    parsedJson.sections.forEach((sec: any, sIdx: number) => {
+      if (sec.tables) {
+        sec.tables.forEach((tbl: any, tIdx: number) => {
+          const tableId = tbl.id || `tbl_${sIdx}_${tIdx}`;
+          const rows: string[][] = [];
+          if (tbl.rows) {
+            tbl.rows.forEach((r: any) => {
+              const rowCells: string[] = [];
+              if (r.cells) {
+                r.cells.forEach((c: any) => {
+                  rowCells.push(c.text?.trim() || '');
+                });
+              }
+              rows.push(rowCells);
+            });
+          }
+          tables.push({
+            table_id: tableId,
+            caption: tbl.caption || tbl.title || `표 ${sIdx + 1}-${tIdx + 1}`,
+            rows,
+          });
+        });
+      }
+    });
+  }
+  return tables;
+};
+
 async function extractMetadataLogic(
   projectId: string,
   blocks: DocumentBlock[],
   rawText: string,
   fileName?: string,
-  parsedMetadata?: any
+  parsedMetadata?: any,
+  tables: TableMatrix[] = []
 ): Promise<{
   extracted: ExtractedMetadata;
   procurement_method_reason?: string;
@@ -306,6 +348,7 @@ async function extractMetadataLogic(
   const aiResult = await extractMetadataWithGemini({
     projectId,
     blocks,
+    tables,
     rawText,
     fileName,
     parsedMetadata,
@@ -355,7 +398,7 @@ app.post('/api/v1/documents/upload', (req, res) => {
 
     // 2단계: rhwp 실패 시 Python HWP/HWPX 추출기로 fallback
     if (!parseResult.success) {
-      console.log(`[Upload] rhwp parsing failed or not installed (${parseResult.error}), falling back to python extractor`);
+      console.log(`[Upload] Primary parser unavailable (${parseResult.error || 'fallback'}), engaging secondary python extractor`);
       parseResult = await parseHwpWithPython(filePath);
     }
 
@@ -378,11 +421,13 @@ app.post('/api/v1/documents/upload', (req, res) => {
     const executionInfo = parseResult.cliExecutionInfo;
     const documentId = `doc-${Date.now()}`;
     const blocks = extractBlocksFromParsed(parsedJson);
+    const tables = extractTablesFromParsed(parsedJson);
     const rawText = parsedJson.raw_text || '';
 
-    // 파싱된 문서 원문 및 블록 캐시 저장 (후속 온디맨드 AI 재추출 및 상세 검토용)
+    // 파싱된 문서 원문 및 블록, 표 캐시 저장 (후속 온디맨드 AI 자율 검토 및 정밀 심사용)
     parsedDocCache.set(documentId, {
       blocks,
+      tables,
       rawText,
       fileName,
       fileSize,
@@ -397,7 +442,8 @@ app.post('/api/v1/documents/upload', (req, res) => {
       blocks,
       rawText,
       fileName,
-      parsedJson.metadata
+      parsedJson.metadata,
+      tables
     );
     const extracted = aiResult.extracted;
     const auth = authoritativeStore.get(documentId) || null;
@@ -629,35 +675,117 @@ app.post('/api/v1/projects/:id/rules/execute', (req, res) => {
   });
 });
 
+// GET /api/v1/projects/:id/review-plan
+// 맞춤형 AI 검토 계획(Review Plan) 조회 또는 온디맨드 자동 수립
+app.get('/api/v1/projects/:id/review-plan', async (req, res) => {
+  const projectId = req.params.id;
+  const cachedPlan = reviewPlanStore.get(projectId);
+  if (cachedPlan) {
+    return res.json({
+      success: true,
+      message: '프로젝트 맞춤형 AI 검토 계획 조회 성공',
+      data: cachedPlan,
+    });
+  }
+
+  const cached = parsedDocCache.get(projectId);
+  const blocks = cached?.blocks || [];
+  const tables = cached?.tables || [];
+  const rawText = cached?.rawText || '';
+
+  const authMeta = authoritativeStore.get(projectId);
+  const extMeta = extractedStore.get(projectId);
+
+  const effectiveMeta: AuthoritativeMetadata = authMeta || {
+    project_id: projectId,
+    version: 1,
+    project_name: extMeta?.project_name || cached?.fileName || '미확정 사업',
+    client_name: extMeta?.client_name || '수요기관 미정',
+    client_type: extMeta?.client_type || 'UNKNOWN',
+    governing_law: extMeta?.governing_law || 'UNKNOWN',
+    procurement_method: extMeta?.procurement_method || 'UNKNOWN',
+    competition_method: extMeta?.competition_method || 'UNKNOWN',
+    award_method: extMeta?.award_method || 'UNKNOWN',
+    budget_amount: extMeta?.budget_amount || null,
+    estimated_price: extMeta?.estimated_price || null,
+    project_period: extMeta?.project_period || null,
+    updated_at: new Date().toISOString(),
+  };
+
+  const docIndex = buildDocumentIndex(blocks, tables, rawText);
+  const navigator = new DocumentNavigator(docIndex);
+
+  try {
+    const generatedPlan = await generateReviewPlan(projectId, effectiveMeta, navigator);
+    reviewPlanStore.set(projectId, generatedPlan);
+    res.json({
+      success: true,
+      message: '프로젝트 특성 및 계약방식에 따른 맞춤형 검토 계획 수립 완료',
+      data: generatedPlan,
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      error: `검토 계획 수립 중 오류가 발생했습니다: ${err?.message || err}`,
+    });
+  }
+});
+
 // POST /api/v1/projects/:id/reviews
-// AI 종합 검토 파이프라인 (Rule Engine -> Fairness Agent -> General Review Agent -> Result Merger & Source Validator)
+// AI 구매검토관 v3 자율 검토 파이프라인
+// (Document Navigator -> Review Planner -> 8 Specialists -> Final Critic -> Source Validator)
 app.post('/api/v1/projects/:id/reviews', async (req, res) => {
   const projectId = req.params.id;
   const payload = req.body || {};
+  const cached = parsedDocCache.get(projectId);
   const blocks = resolveBlocksFromPayload(payload, projectId);
-  const rawText = payload.raw_text || '';
+  const tables = cached?.tables || [];
+  const rawText = payload.raw_text || cached?.rawText || '';
 
   try {
-    // 1. Evaluate Rule Engine
+    // 1. Evaluate Rule Engine (105 룰 및 메타데이터 정합성)
     const ruleFindings = evaluateRuleEngine(projectId, blocks);
 
-    // 2. Authoritative Metadata
-    const authoritativeMeta = authoritativeStore.get(projectId) || null;
+    // 2. Authoritative Metadata (또는 Extracted Metadata 기반 임시 구성)
+    const authMeta = authoritativeStore.get(projectId);
+    const extMeta = extractedStore.get(projectId);
 
-    // 3. Orchestrate Review Pipeline (Fairness + General Review + Result Merger & Source Validator)
-    const pipelineResult = await orchestrateReviewPipeline({
+    const effectiveMeta: AuthoritativeMetadata = authMeta || {
+      project_id: projectId,
+      version: 1,
+      project_name: extMeta?.project_name || cached?.fileName || '미확정 사업',
+      client_name: extMeta?.client_name || '수요기관',
+      client_type: extMeta?.client_type || 'UNKNOWN',
+      governing_law: extMeta?.governing_law || 'UNKNOWN',
+      procurement_method: extMeta?.procurement_method || 'UNKNOWN',
+      competition_method: extMeta?.competition_method || 'UNKNOWN',
+      award_method: extMeta?.award_method || 'UNKNOWN',
+      budget_amount: extMeta?.budget_amount || null,
+      estimated_price: extMeta?.estimated_price || null,
+      project_period: extMeta?.project_period || null,
+      updated_at: new Date().toISOString(),
+    };
+
+    // 3. Run Autonomous Review Loop (Review Planner -> Navigator Specialists -> Final Critic)
+    const autonomousResult = await executeAutonomousReview({
       projectId,
+      authoritativeMetadata: effectiveMeta,
       blocks,
+      tables,
       rawText,
-      authoritativeMetadata: authoritativeMeta,
-      ruleFindings,
+      existingRuleFindings: ruleFindings,
     });
 
-    // 4. Update findingsStore preserving existing decisions
+    reviewPlanStore.set(projectId, autonomousResult.reviewPlan);
+
+    // 4. Merge Rule Findings + Critic-Verified Specialist Findings
+    const combinedFindings: Finding[] = [...ruleFindings, ...autonomousResult.findings];
+
+    // 5. Update findingsStore preserving user's decisions
     const existingProjectMap = findingsStore.get(projectId) || new Map<string, Finding>();
     const updatedMap = new Map<string, Finding>();
 
-    for (const finding of pipelineResult.findings) {
+    for (const finding of combinedFindings) {
       if (existingProjectMap.has(finding.finding_id)) {
         const prev = existingProjectMap.get(finding.finding_id)!;
         finding.decision = prev.decision;
@@ -672,18 +800,29 @@ app.post('/api/v1/projects/:id/reviews', async (req, res) => {
 
     res.json({
       success: true,
-      message: `AI 종합 검토 파이프라인 완료 (규칙: ${pipelineResult.stage_counts.rule_findings}건, 공정성: ${pipelineResult.stage_counts.fairness_findings}건, 품질: ${pipelineResult.stage_counts.general_findings}건, 병합: ${pipelineResult.merged_count}건, 유효성 검증 완료: ${pipelineResult.total_findings}건)`,
-
+      message: `AI 구매검토관 v3 자율 검토 완료: ${autonomousResult.reviewPlan.project_type_classification} 검토 계획에 따라 총 ${combinedFindings.length}건(규칙: ${ruleFindings.length}건, AI 전문검토 및 비평관 검증: ${autonomousResult.findings.length}건) 도출`,
       data: {
-        ...pipelineResult,
+        project_id: projectId,
+        total_findings: combinedFindings.length,
         findings: Array.from(updatedMap.values()),
+        merged_count: 0,
+        filtered_by_validator_count: 0,
+        stage_counts: {
+          rule_findings: ruleFindings.length,
+          fairness_findings: combinedFindings.filter((f) => f.category === 'FAIRNESS').length,
+          general_findings: autonomousResult.findings.length,
+        },
+        executed_at: new Date().toISOString(),
+        review_plan: autonomousResult.reviewPlan,
+        critic_summary: autonomousResult.critic_summary,
+        total_inspected_blocks: autonomousResult.total_inspected_blocks,
       },
     });
   } catch (err: any) {
-    console.error('Review pipeline error:', err);
+    console.error('Autonomous Review pipeline error:', err);
     res.status(500).json({
       success: false,
-      error: `AI 종합 검토 파이프라인 실행 중 오류가 발생했습니다: ${err?.message || err}`,
+      error: `AI 자율 검토 파이프라인 실행 중 오류가 발생했습니다: ${err?.message || err}`,
     });
   }
 });
